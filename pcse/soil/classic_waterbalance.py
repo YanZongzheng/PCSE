@@ -312,11 +312,13 @@ class WaterbalanceFD(SimulationObject):
         self.NINFTB = Afgen([0.0,0.0, 0.5,0.0, 1.5,1.0])
 
         # Initialize model state variables.       
-        self.states = self.StateVariables(kiosk, publish="SM", SM=SM, SS=SS,
+        self.states = self.StateVariables(kiosk, SM=SM, SS=SS,
                            W=W, WI=WI, WLOW=WLOW, WLOWI=WLOWI, WWLOW=WWLOW,
                            WTRAT=0., EVST=0., EVWT=0., TSR=0.,
                            RAINT=0., WDRT=0., TOTINF=0., TOTIRR=0.,
-                           PERCT=0., LOSST=0., WBALRT=-999., WBALTT=-999.)
+                           PERCT=0., LOSST=0., WBALRT=-999., WBALTT=-999.,
+                           publish=["SM","EVST","EVWT","TSR","RAINT",
+                                    "TOTINF","TOTIRR","PERCT", "LOSST"])
         self.rates = self.RateVariables(kiosk)
         
         # Connect to CROP_EMERGED/CROP_FINISH signals for water balance to

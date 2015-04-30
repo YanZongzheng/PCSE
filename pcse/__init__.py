@@ -81,6 +81,7 @@ from . import agromanagement
 from . import soil
 from . import crop
 from .start_wofost import start_wofost
+from .rerunner import Rerunner
 
 # If no PCSE demo database, build it!
 pcse_db_file = os.path.join(settings.PCSE_USER_HOME, "pcse.db")

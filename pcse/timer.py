@@ -27,9 +27,7 @@ class Timer(AncillaryObject):
  
         * "OUTPUT": sent when the condition for generating output is True
           which depends on the output type and interval.
- 
-
-  """
+    """
 
     start_date = Instance(datetime.date)
     final_date = Instance(datetime.date)

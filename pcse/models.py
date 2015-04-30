@@ -78,7 +78,7 @@ class _Wofost71Base(Engine):
 
         # Merge records with output ad summary_output variables with the run_id
         recs_output = [merge_dict(rec, runid) for rec in self._saved_output]
-        recs_summary_output = [merge_dict(rec, runid) for rec in self._saved_summary_output]
+        recs_summary_output = [merge_dict(rec, runid) for rec in self._saved_crop_summary_output]
 
         table_sim_results_ts = sa.Table('sim_results_timeseries', metadata,
                                         autoload=True)

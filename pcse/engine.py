@@ -93,7 +93,7 @@ class Engine(BaseEngine):
     
     # placeholders for variables saved during model execution
     _saved_output = Instance(list)
-    _saved_summary_output = Instance(list)
+    _saved_crop_summary_output = Instance(list)
 
     # Helper variables
     TMNSAV = Instance(deque)
@@ -149,7 +149,8 @@ class Engine(BaseEngine):
 
         # Placeholder for variables to be saved during a model run
         self._saved_output = list()
-        self._saved_summary_output = list()
+        self._saved_crop_summary_output = list()
+        self._saved_soil_summary_output = list()
 
         # Calculate initial rates
         self.calc_rates(self.day, self.drv)
@@ -214,6 +215,7 @@ class Engine(BaseEngine):
         
         if self.flag_terminate is True:
             self.soil.finalize(self.day)
+            self._save_soil_summary_output()
 
     #---------------------------------------------------------------------------
     def run_till_terminate(self):
@@ -237,6 +239,7 @@ class Engine(BaseEngine):
 
         if self.flag_terminate is True:
             self.soil.finalize(self.day)
+            self._save_soil_summary_output()
 
     #---------------------------------------------------------------------------
     def _on_CROP_FINISH(self, day, crop_delete=False):
@@ -308,7 +311,7 @@ class Engine(BaseEngine):
 
         # Generate summary output after finalize() has been run.
         if self.flag_summary_output:
-            self._save_summary_output()
+            self._save_crop_summary_output()
 
         # Only remove the crop simulation object from the system when the crop
         # is finished, when explicitly asked to do so.
@@ -362,17 +365,33 @@ class Engine(BaseEngine):
         self._saved_output.append(states)
 
     #---------------------------------------------------------------------------
-    def _save_summary_output(self):
-        """Appends selected model variables to self._saved_summary_output.
+    def _save_crop_summary_output(self):
+        """Appends selected model variables to self._saved_crop_summary_output.
+
+        Crop summmary output is generated at the end of the crop cycle, which
+        means that multiple crop summary outputs can be generated when multiple
+        cropping cycles are simulated.
         """
         # Switch off the flag for generating output
         self.flag_summary_output = False
 
         # find current value of variables to are to be saved
         states = {}
-        for var in self.mconf.SUMMARY_OUTPUT_VARS:
+        for var in self.mconf.SUMMARY_CROP_OUTPUT_VARS:
             states[var] = self.get_variable(var)
-        self._saved_summary_output.append(states)
+        self._saved_crop_summary_output.append(states)
+
+    #---------------------------------------------------------------------------
+    def _save_soil_summary_output(self):
+        """Appends selected model variables to self._saved_soil_summary_output.
+        Soil summary output is only generated at the end of the simulation
+        """
+
+        # find current value of variables to are to be saved
+        states = {}
+        for var in self.mconf.SUMMARY_SOIL_OUTPUT_VARS:
+            states[var] = self.get_variable(var)
+        self._saved_soil_summary_output.append(states)
 
     #---------------------------------------------------------------------------
     def set_variable(self, varname, value):
@@ -413,4 +432,4 @@ class Engine(BaseEngine):
         return self._saved_output
 
     def get_summary_output(self):
-        return self._saved_summary_output
+        return self._saved_crop_summary_output

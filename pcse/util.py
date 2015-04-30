@@ -821,7 +821,7 @@ class ConfigurationLoader(object):
         :param config: string given file name containing model configuration
         """
     _required_attr = ("CROP", "SOIL", "AGROMANAGEMENT", "OUTPUT_VARS", "OUTPUT_INTERVAL",
-                      "OUTPUT_INTERVAL_DAYS", "SUMMARY_OUTPUT_VARS")
+                      "OUTPUT_INTERVAL_DAYS", "SUMMARY_CROP_OUTPUT_VARS", "SUMMARY_SOIL_OUTPUT_VARS")
     defined_attr = []
     model_config_file = None
     description = None
