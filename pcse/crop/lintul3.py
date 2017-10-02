@@ -7,7 +7,9 @@ LINTUL3
 from math import exp
 
 from ..base_classes import SimulationObject, ParamTemplate, RatesTemplate
-from ..base_classes import StatesWithImplicitRatesTemplate as StateVariables
+from ..base_classes import StatesWithImplicitRatesTemplate as StatesTemplate1
+from ..base_classes import StatesTemplate as StatesTemplate2
+
 from ..traitlets import Float, AfgenTrait, Instance, Bool
 from ..decorators import prepare_rates, prepare_states
 from ..util import limit
@@ -19,6 +21,297 @@ from .. import signals
 cm2mm = lambda x: x*10.
 joule2megajoule = lambda x: x/1e6
 m2mm = lambda x: x*1000
+
+
+class Lintul3_Nstress(SimulationObject):
+    """
+    Nitrogen stress
+
+    A crop is assumed to experience N stress at N concentrations below a critical
+    value for unrestricted growth. To quantify crop response to nitrogen shortage, a
+    Nitrogen Nutrition Index (NNI) is defined, ranging from 0 (maximum N shortage)
+    to 1 (no N shortage):
+
+    NNI = (actual crop [N] - residual [N]) / (critical [N] - residual [N])
+
+    Critical crop nitrogen concentration, the lower limit of canopy nitrogen
+    concentration in leaves and stems required for unrestricted growth, has been
+    taken as half the maximum nitrogen concentration. An experimental basis for such
+    an assumption can be derived from the study of Zhen and Leigh (1990), who
+    reported that nitrate accumulation in plant occurs in significant quantity when
+    the N needs to reach the maximum growth were fulfilled and the mean value of
+    nitrate accumulated beyond the criticalNconcentration was about 50% for
+    different stages.
+    """
+
+    class Parameters(ParamTemplate):
+        FRNX = Float(-99)    # Optimal N concentration as the fraction of maximum N concentration in leaves.
+        LRNR = Float(-99)  # Maximum concentration in roots as fraction of maximum N concentration in leaves
+        LSNR = Float(-99)  # Maximum N concentration in stems as fraction of maximum N concentration in leaves
+        RNFLV = Float(-99)  # Residual N concentration in leaves
+        RNFRT = Float(-99)  # Residual N concentration in roots.
+        RNFST = Float(-99)  # Residual N concentration in stems
+        NMXLV = AfgenTrait()  # Maximum N concentration in the leaves as a function of development stage.
+
+    def initialize(self, day, kiosk, parvalues):
+        self.params = self.Parameters(parvalues)
+
+    @prepare_rates
+    def __call__(self, day, drv):
+        p = self.params
+
+        WLVG = self.kiosk["WLVG"]
+        WST = self.kiosk["WST"]
+        TBGMR = self.kiosk["TBGMR"]
+        DVS = self.kiosk["DVS"]
+        ANLV = self.kiosk["ANLV"]
+        ANST = self.kiosk["ANST"]
+
+        # Average residual N concentration.
+        NRMR = (WLVG * p.RNFLV + WST * p.RNFST) / TBGMR
+
+        # Maximum N concentration in the leaves, from which the values of the
+        # stem and roots are derived, as a function of development stage.
+        NMAXLV = p.NMXLV(DVS)
+        NMAXST = p.LSNR * NMAXLV
+
+        # maximum nitrogen concentration of leaves and stem.
+        NOPTLV = p.FRNX * NMAXLV
+        NOPTST = p.FRNX * NMAXST
+
+        # Maximum N content in the plant.
+        NOPTS = NOPTST * WST
+        NOPTL = NOPTLV * WLVG
+        NOPTMR = (NOPTL + NOPTS) / TBGMR
+
+        # Total N in green matter of the plant.
+        NUPGMR = ANLV + ANST
+
+        # Nitrogen Nutrition Index.
+        NFGMR = NUPGMR / TBGMR
+        NNI = limit(0.001, 1.0, ((NFGMR - NRMR) / (NOPTMR - NRMR)))
+
+        return NNI
+
+
+class Lintul3_nutrients(SimulationObject):
+    # placeholders for initial nitrogen contents for leaves, stems, roots and storage organs
+    ANLVI = 0.
+    ANSTI = 0.
+    ANRTI = 0.
+    ANSOI = 0.
+
+    class Parameters(ParamTemplate):
+        DVSNLT = Float(-99)    # development stage N-limit
+        DVSNT  = Float(-99)    # development stage N-threshold
+        FNTRT  = Float(-99)    # Nitrogen translocation from roots as a fraction of the total amount of nitrogen translocated from leaves and stem.
+        FRNX   = Float(-99)    # Optimal N concentration as the fraction of maximum N concentration in leaves.
+        LRNR = Float(-99)  # Maximum concentration in roots as fraction of maximum N concentration in leaves
+        LSNR = Float(-99)  # Maximum N concentration in stems as fraction of maximum N concentration in leaves
+        RNFLV = Float(-99)  # Residual N concentration in leaves
+        RNFRT = Float(-99)  # Residual N concentration in roots.
+        RNFST = Float(-99)  # Residual N concentration in stems
+        NMXLV = AfgenTrait()  # Maximum N concentration in the leaves as a function of development stage.
+        NMAXSO = Float(-99)  # Maximum N concentration in storage organs
+        TCNT = Float(-99)  # Time coefficient(days) for N translocation.
+        NFRLVI = Float(-99)  # Initial fraction of N (g N g-1 DM) in leaves.
+        NFRRTI = Float(-99)  # Initial fraction of N (g N g-1 DM) in roots.
+        NFRSTI = Float(-99)  # Initial fraction of N (g N g-1 DM) in stem.
+        WLVGI = Float(-99)  # Initial weight of green leaves
+        WSTI = Float(-99)  # Initial weight of stems
+        WRTLI = Float(-99)  # Initial weight of roots
+        WSOI = Float(-99)  # Initial weight of storage organs
+        WCWP = Float(-99)  # Water content at wilting point (1.5 MPa) m3/ m3
+
+    class StateVariables(StatesTemplate1):
+        ANLV = Float(-99.) # Actual N content in leaves
+        ANST = Float(-99.) # Actual N content in stem
+        ANRT = Float(-99.) # Actual N content in root
+        ANSO = Float(-99.) # Actual N content in storage organs
+        NUPTT = Float(-99.) # Total uptake of N over time (g N m-2)
+        NLOSSL = Float(-99.) # total N loss by leaves
+        NLOSSR = Float(-99.) # total N loss by roots
+        NNI = Float(-99)  # Nitrogen nutrition index
+        NDEMTO = Float(-99) # Total nitrogen demand
+
+    def initialize(self, day, kiosk, parvalues):
+        self.params = self.Parameters(parvalues)
+        p = self.params
+
+        # Initial amount of N (g/m2) in leaves, stem, roots, and storage organs.
+        self.ANLVI = p.NFRLVI * p.WLVGI
+        self.ANSTI = p.NFRSTI * p.WSTI
+        self.ANRTI = p.NFRRTI * p.WRTLI
+        self.ANSOI = 0.0
+        init = self.StateVariables.initialValues()
+        init["NNI"] = 1.0
+        init["ANLV"] = self.ANLVI
+        init["ANST"] = self.ANSTI
+        init["ANRT"] = self.ANRTI
+        init["ANSO"] = self.ANSOI
+
+        self.states = self.StateVariables(kiosk, publish=["NDEMTO", "ANLV", "ANST", "ANRT", "ANSO"],
+                                          NNI=1.0, ANLV=self.ANLVI, ANST=self.ANSTI, ANRT=self.ANRTI,
+                                          ANSO=self.ANSOI, NUPTT=0., NLOSSL=0., NLOSSR=0., NDEMTO=0.,)
+        self.states.initialize_rates()
+
+    @prepare_rates
+    def calc_rates(self, day, drv):
+        p = self.params
+        s = self.states
+
+        WLVG = self.kiosk["WLVG"]
+        WST = self.kiosk["WST"]
+        WRT = self.kiosk["WRT"]
+        WSO = self.kiosk["WSO"]
+        TBGMR = self.kiosk["TBGMR"]
+        DVS = self.kiosk["DVS"]
+        WC = self.kiosk["WC"]
+
+        # translocatable N in leaves, stem, roots and
+        # storage organs.
+        ATNLV = max(0., s.ANLV - WLVG * p.RNFLV)
+        ATNST = max(0., s.ANST - WST * p.RNFST)
+        ATNRT = min((ATNLV + ATNST) * p.FNTRT, s.ANRT - WRT * p.RNFRT)
+        ATN = ATNLV + ATNST + ATNRT
+
+
+        """
+        Loss of nitrogen due to plant death rates
+        """
+        RNLDLV = p.RNFLV * self.kiosk["DLV"]
+        RNLDRT = p.RNFRT * self.kiosk["DRRT"]
+
+        """
+        Nitrogen demand
+
+        Total crop nitrogen demand equals the sum of the nitrogen demands of its
+        individual organs (excluding storage organs, for which nitrogen demand is met by
+        translocation from the other organs, i.e. roots, stems and leaves) (Fig. 3).
+        Nitrogen demand of the individual organs is calculated as the difference
+        between maximum and actual organ nitrogen contents. The maximum nitrogen content
+        is defined as a function of canopy development stage (Drenth et al., 1994).
+        Total N demand (TNdem: gm-2 d-1) of the crop is:
+
+        TNdem = sum(Nmax,i - ANi / dt)
+
+        where Nmax,i is the maximum nitrogen concentration of organ i (gN/g biomass,
+        with i referring to leaves, stems and roots), Wi is the weight of organ i
+        (g biomass/m2), and ANi is the actual nitrogen content of organ i (gN/m2).
+        """
+
+        # N demand of leaves, roots and stem storage organs.
+        # Maximum N concentration in the leaves, from which the values of the
+        # stem and roots are derived, as a function of development stage.
+        NMAXLV = p.NMXLV(DVS)
+        NMAXST = p.LSNR * NMAXLV
+        NMAXRT = p.LRNR * NMAXLV
+        NDEMLV = max(NMAXLV * WLVG - s.ANLV, 0.)
+        NDEMST = max(NMAXST * WST - s.ANST, 0.)
+        NDEMRT = max(NMAXRT * WRT - s.ANRT, 0.)
+        NDEMSO = max(p.NMAXSO * WSO - s.ANSO, 0.) / p.TCNT
+
+        # N supply to the storage organs.
+        NSUPSO = ATN / p.TCNT if (DVS > p.DVSNT) else 0.0
+
+        # Rate of N uptake in grains.
+        RNSO = min(NDEMSO, NSUPSO)
+
+        # Total Nitrogen demand.
+        NDEMTO = max(0.0, (NDEMLV + NDEMST + NDEMRT))
+
+        """
+        About 75-90% of the total N uptake at harvest takes place before
+        anthesis and, in conditions of high soil fertility, post-anthesis N uptake
+        may contribute up to 25% but would exclusively end up in the grain
+        as protein. Therefore, this nitrogen would not play any role in the
+        calculation of nitrogen stress that influences the biomass formation.
+        Therefore, nitrogen uptake is assumed to cease at anthesis,
+        as nitrogen content in the vegetative parts hardly increases after
+        anthesis
+        """
+
+        #  Nitrogen uptake limiting factor at low moisture conditions in the
+        #  rooted soil layer before anthesis. After anthesis there is no
+        #  uptake from the soil anymore.
+        NLIMIT = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
+
+        DELT = 1.0
+        TNSOIL = self.kiosk["TNSOIL"]
+        NUPTR = (max(0., min(NDEMTO, TNSOIL)) * NLIMIT) / DELT
+
+        # N translocated from leaves, stem, and roots.
+        RNTLV = RNSO * ATNLV / ATN
+        RNTST = RNSO * ATNST / ATN
+        RNTRT = RNSO * ATNRT / ATN
+
+
+        # compute the partitioning of the total N uptake rate (NUPTR) over the leaves, stem and roots.
+        RNULV, RNUST, RNURT = self.N_uptakeRates(NDEMLV, NDEMST, NDEMRT, NUPTR, NDEMTO)
+
+        RNST = RNUST - RNTST
+        RNRT = RNURT - RNTRT - RNLDRT
+
+        # Rate of change of N in organs
+        RNLV = RNULV - RNTLV - RNLDLV
+
+        NBALAN = (s.NUPTT + (self.ANLVI + self.ANSTI + self.ANRTI + self.ANSOI)
+                  - (s.ANLV + s.ANST + s.ANRT + s.ANSO + s.NLOSSL + s.NLOSSR))
+        if abs(NBALAN) > 0.0001:
+            raise NitrogenBalanceError("Nitrogen un-balance in crop model at day %s" % day)
+
+        s.rANLV = RNLV
+        s.rANST = RNST
+        s.rANRT = RNRT
+        s.rANSO = RNSO
+        s.rNUPTT = NUPTR
+        s.rNLOSSL = RNLDLV
+        s.rNLOSSR = RNLDRT
+
+    @prepare_states
+    def integrate(self, day):
+
+        s = self.states
+        p = self.params
+
+        s.integrate(delta=1.0)
+        # N demand of leaves, roots and stem storage organs.
+        # Maximum N concentration in the leaves, from which the values of the
+        # stem and roots are derived, as a function of development stage.
+
+        WLVG = self.kiosk["WLVG"]
+        WST = self.kiosk["WST"]
+        WRT = self.kiosk["WRT"]
+        WSO = self.kiosk["WSO"]
+        DVS = self.kiosk["DVS"]
+
+        NMAXLV = p.NMXLV(DVS)
+        NMAXST = p.LSNR * NMAXLV
+        NMAXRT = p.LRNR * NMAXLV
+        NDEMLV = max(NMAXLV * WLVG - s.ANLV, 0.)
+        NDEMST = max(NMAXST * WST - s.ANST, 0.)
+        NDEMRT = max(NMAXRT * WRT - s.ANRT, 0.)
+        NDEMSO = max(p.NMAXSO * WSO - s.ANSO, 0.) / p.TCNT
+
+        # Total Nitrogen demand.
+        s.NDEMTO = max(0.0, (NDEMLV + NDEMST + NDEMRT))
+
+    def N_uptakeRates(self, NDEML, NDEMS, NDEMR, NUPTR, NDEMTO):
+        """
+        compute the partitioning of the total N uptake rate (NUPTR)
+        over the leaves, stem, and roots.
+        Obsolete subroutine name: RNUSUB
+        """
+
+        if (NDEMTO > 0):
+            RNULV = (NDEML / NDEMTO) * NUPTR
+            RNUST = (NDEMS / NDEMTO) * NUPTR
+            RNURT = (NDEMR / NDEMTO) * NUPTR
+
+            return RNULV, RNUST, RNURT
+        else:
+            return 0.0, 0.0, 0.0
+
 
 class Lintul3(SimulationObject):
     """
@@ -85,11 +378,11 @@ class Lintul3(SimulationObject):
         DVSNLT   Development stage after which no nutrients are absorbed    -
         DVSNT    development stage above which N translocation to
                  storage organs does occur                                  -
-        FNTRT    Nitrogen translocation from roots to storage 
-                 organs as a fraction of total amount of 
-                 nitrogen translocated from leaves and stem to 
+        FNTRT    Nitrogen translocation from roots to storage
+                 organs as a fraction of total amount of
+                 nitrogen translocated from leaves and stem to
                  storage organs                                             -
-        FRNX     Critical N, as a fraction of maximum N 
+        FRNX     Critical N, as a fraction of maximum N
                  concentration                                              -
         K        Light attenuation coefficient                              m²/m²
         LAICR    critical LAI above which mutual shading of      
@@ -210,44 +503,45 @@ class Lintul3(SimulationObject):
 
     # sub-model components for crop simulation
     pheno = Instance(SimulationObject)
+    nstress = Instance(SimulationObject)
+    n_dynamics = Instance(SimulationObject)
     # placeholder for effective N application rate from the _on_APPLY_N event handler.
     FERTNS = 0.0
     # placeholder for initial leaf area index
     LAII = 0.
-    # placeholders for initial nitrogen contents for leaves, stems, roots and storage organs
-    ANLVI = 0.
-    ANSTI = 0.
-    ANRTI = 0.
-    ANSOI = 0.
+    # # placeholders for initial nitrogen contents for leaves, stems, roots and storage organs
+    # ANLVI = 0.
+    # ANSTI = 0.
+    # ANRTI = 0.
+    # ANSOI = 0.
 
     # Parameters, rates and states which are relevant at the main crop simulation level
     class Parameters(ParamTemplate):
         DVSI   = Float(-99.)   # Development stage at start of the crop
         DVSDR  = Float(-99)    # Development stage above which deathOfLeaves of leaves and roots start.
         DVSNLT = Float(-99)    # development stage N-limit
-        DVSNT  = Float(-99)    # development stage N-threshold
-        FNTRT  = Float(-99)    # Nitrogen translocation from roots as a fraction of the total amount of nitrogen translocated from leaves and stem.
-        FRNX   = Float(-99)    # Optimal N concentration as the fraction of maximum N concentration.
+        # DVSNT  = Float(-99)    # development stage N-threshold
+        # FNTRT  = Float(-99)    # Nitrogen translocation from roots as a fraction of the total amount of nitrogen translocated from leaves and stem.
+        # FRNX   = Float(-99)    # Optimal N concentration as the fraction of maximum N concentration.
         K      = Float(-99)    # light extinction coefficient
         LAICR  = Float(-99)    # (oC d)-1, critical LAI above which mutual shading of leaves occurs,
-        LRNR   = Float(-99)    # 
-        LSNR   = Float(-99)    # 
+        # LRNR   = Float(-99)    #
+        # LSNR   = Float(-99)    #
         LUE    = Float(-99)    # Light use efficiency.
         NLAI   = Float(-99)    # Coefficient for the effect of N stress on LAI reduction(during juvenile phase)
         NLUE   = Float(-99)    # Extinction coefficient for  Nitrogen distribution down the canopy
-        NMAXSO = Float(-99)    # 
         NPART  = Float(-99)    # Coefficient for the effect of N stress on leaf biomass reduction
         NSLA   = Float(-99)    # Coefficient for the effect of N stress on SLA reduction
         RDRSHM = Float(-99)    # and the maximum relative deathOfLeaves rate of leaves due to shading.
         RGRL   = Float(-99)    # Relative totalGrowthRate rate of LAI at the exponential totalGrowthRate phase
-        RNFLV  = Float(-99)    # Residual N concentration in leaves
-        RNFRT  = Float(-99)    # Residual N concentration in roots.
-        RNFST  = Float(-99)    # Residual N concentration in stem
+        # RNFLV  = Float(-99)    # Residual N concentration in leaves
+        # RNFRT  = Float(-99)    # Residual N concentration in roots.
+        # RNFST  = Float(-99)    # Residual N concentration in stem
         ROOTDM = Float(-99)    # Maximum root depth for a rice crop.
         RRDMAX = Float(-99)    # Maximum rate of increase in rooting depth (m d-1) for a rice crop.
         SLAC   = Float(-99)    # Specific leaf area constant.
         TBASE  = Float(-99)    # Base temperature for spring wheat crop.
-        TCNT   = Float(-99)    # Time coefficient(days) for N translocation.
+        # TCNT   = Float(-99)    # Time coefficient(days) for N translocation.
         TRANCO = Float(-99)    # Transpiration constant (mm/day) indicating the level of drought tolerance of the wheat crop.
         TSUMAG = Float(-99)    # Temperature sum for ageing of leaves
         WCFC   = Float(-99)    # Water content at field capacity (0.03 MPa) m3/ m3
@@ -264,28 +558,28 @@ class Lintul3(SimulationObject):
         FRTTB  = AfgenTrait()  # Partitioning coefficients
         FSOTB  = AfgenTrait()  # Partitioning coefficients
         FSTTB  = AfgenTrait()  # Partitioning coefficients
-        NMXLV  = AfgenTrait()  # Maximum N concentration in the leaves as a function of development stage.
+        # NMXLV  = AfgenTrait()  # Maximum N concentration in the leaves as a function of development stage.
         RDRT   = AfgenTrait()  #
         SLACF  = AfgenTrait()  # Leaf area correction function as a function of development stage, DVS.        
 
         ROOTDI = Float(-99)   # initial rooting depth [m] 
-        NFRLVI = Float(-99)   # Initial fraction of N (g N g-1 DM) in leaves.
-        NFRRTI = Float(-99)   # Initial fraction of N (g N g-1 DM) in roots.
-        NFRSTI = Float(-99)   # Initial fraction of N (g N g-1 DM) in stem.
+        # NFRLVI = Float(-99)   # Initial fraction of N (g N g-1 DM) in leaves.
+        # NFRRTI = Float(-99)   # Initial fraction of N (g N g-1 DM) in roots.
+        # NFRSTI = Float(-99)   # Initial fraction of N (g N g-1 DM) in stem.
         WLVGI  = Float(-99)   # Initial weight of green leaves
         WSTI   = Float(-99)   # Initial weight of stems
         WRTLI  = Float(-99)   # Initial weight of roots
         WSOI   = Float(-99)   # Initial weight of storage organs
         
-    class Lintul3States(StateVariables):
+    class Lintul3States(StatesTemplate1):
         LAI = Float(-99.) # leaf area index
-        ANLV = Float(-99.) # Actual N content in leaves
-        ANST = Float(-99.) # Actual N content in stem
-        ANRT = Float(-99.) # Actual N content in root
-        ANSO = Float(-99.) # Actual N content in storage organs
-        NUPTT = Float(-99.) # Total uptake of N over time (g N m-2)
-        NLOSSL = Float(-99.) # total N loss by leaves
-        NLOSSR = Float(-99.) # total N loss by roots
+        # ANLV = Float(-99.) # Actual N content in leaves
+        # ANST = Float(-99.) # Actual N content in stem
+        # ANRT = Float(-99.) # Actual N content in root
+        # ANSO = Float(-99.) # Actual N content in storage organs
+        # NUPTT = Float(-99.) # Total uptake of N over time (g N m-2)
+        # NLOSSL = Float(-99.) # total N loss by leaves
+        # NLOSSR = Float(-99.) # total N loss by roots
         WLVG  = Float(-99.) # Weight of green leaves
         WLVD  = Float(-99.) # Weight of dead leaves
         WST = Float(-99.) # Weight of stem
@@ -297,7 +591,8 @@ class Lintul3(SimulationObject):
         CUMPAR = Float(-99.)
         TNSOIL = Float(-99.) # Amount of inorganic N available for crop uptake.
         TAGBM = Float(-99.) # Total aboveground biomass [g /m-2)
-        NNI = Float(-99) # Nitrogen nutrition index
+        TBGMR = Float(-99.)  # Total aboveground green (living) biomas
+        # NNI = Float(-99) # Nitrogen nutrition index
 
     # These are some rates which are not directly connected to a state (PEVAP, TRAN) of which must be published
     # (RROOTD) for the water balance module. Therefore, we explicitly define them here.
@@ -307,6 +602,8 @@ class Lintul3(SimulationObject):
         TRAN = Float()
         TRANRF = Float()
         RROOTD = Float()
+        DLV = Float()
+        DRRT = Float()
 
 
     def initialize(self, day, kiosk, parvalues):
@@ -319,7 +616,7 @@ class Lintul3(SimulationObject):
         self.kiosk = kiosk
         self.params = self.Parameters(parvalues)
         self.rates = self.Lintul3Rates(self.kiosk,
-                                       publish=["PEVAP", "TRAN", "RROOTD"])
+                                       publish=["PEVAP", "TRAN", "RROOTD", "DLV", "DRRT"])
 
         self._connect_signal(self._on_APPLY_N, signals.apply_n)
 
@@ -332,30 +629,40 @@ class Lintul3(SimulationObject):
         ISLA = p.SLAC * SLACFI
         self.LAII = p.WLVGI * ISLA
 
-        # Initial amount of N (g/m2) in leaves, stem, roots, and storage organs.
-        self.ANLVI = p.NFRLVI * p.WLVGI
-        self.ANSTI = p.NFRSTI * p.WSTI
-        self.ANRTI = p.NFRRTI * p.WRTLI
-        self.ANSOI = 0.0
+        # # Initial amount of N (g/m2) in leaves, stem, roots, and storage organs.
+        # self.ANLVI = p.NFRLVI * p.WLVGI
+        # self.ANSTI = p.NFRSTI * p.WSTI
+        # self.ANRTI = p.NFRRTI * p.WRTLI
+        # self.ANSOI = 0.0
 
         # Generate a dict with 'default' initial states (e.g. zero)
         init = self.Lintul3States.initialValues()
 
         # Initialize state variables
         init["LAI"] = self.LAII
-        init["ANLV"] = self.ANLVI
-        init["ANST"] = self.ANSTI
-        init["ANRT"] = self.ANRTI
+        # init["ANLV"] = self.ANLVI
+        # init["ANST"] = self.ANSTI
+        # init["ANRT"] = self.ANRTI
         init["WLVG"] = p.WLVGI
         init["WST"] = p.WSTI
         init["WSO"] = p.WSOI
         init["WRT"] = p.WRTLI
         init["ROOTD"] = p.ROOTDI
+        init["TBGMR"] = p.WLVGI + p.WSTI
+#        init["TAGBM"] = p.WLVGI + p.WSTI + p.WSOI
+#        init["TGROWTH"] = p.WLVGI + p.WSTI + p.WSOI + p.WRTLI
 
         # Initialize the states objects
-        self.states = self.Lintul3States(kiosk, publish=["LAI", "ROOTD"], **init)
+        self.states = self.Lintul3States(kiosk,
+                                         publish=["LAI", "ROOTD", "WLVG", "WST",
+                                                  "WRT", "WSO", "TBGMR", "TNSOIL"],
+                                         **init)
         # Initialize the associated rates of the states
         self.states.initialize_rates()
+
+        # Init nutrient dynamics module
+        self.nstress = Lintul3_Nstress(day, kiosk, parvalues)
+        self.n_dynamics = Lintul3_nutrients(day, kiosk, parvalues)
 
     def _on_APPLY_N(self, amount, recovery):
         """Receive signal for N application with amount the nitrogen amount in g N m-2 and
@@ -406,63 +713,62 @@ class Lintul3(SimulationObject):
         # if before emergence there is no need to continue
         # because only the phenology is running.
         if crop_stage == "emerging":
+            self.touch()
             return  # no aboveground crop to calculate yet
 
         # code below is executed only POST-emergence
 
-        # translocatable N in leaves, stem, roots and
-        # storage organs.
-        ATNLV, ATNST, ATNRT, ATN = self.translocatable_N()
+        # # translocatable N in leaves, stem, roots and
+        # # storage organs.
+        # ATNLV, ATNST, ATNRT, ATN = self.translocatable_N()
 
         # Relative deathOfLeaves rate of leaves due to senescence/ageing.
         RDRTMP = p.RDRT(DAVTMP)
 
-        # Total living vegetative biomass.
-        TBGMR = s.WLVG + s.WST
 
-        # Average residual N concentration.
-        NRMR = (s.WLVG * p.RNFLV + s.WST * p.RNFST) / TBGMR
-
-        # Maximum N concentration in the leaves, from which the values of the
-        # stem and roots are derived, as a function of development stage.
-        NMAXLV  = p.NMXLV(DVS)
-        NMAXST  = p.LSNR * NMAXLV
-        NMAXRT  = p.LRNR * NMAXLV
-
-        # maximum nitrogen concentration of leaves and stem.
-        NOPTLV  = p.FRNX * NMAXLV
-        NOPTST  = p.FRNX * NMAXST
-
-        # Maximum N content in the plant.
-        NOPTS   = NOPTST * s.WST
-        NOPTL   = NOPTLV * s.WLVG
-        NOPTMR  = (NOPTL + NOPTS)/TBGMR
-
-        # Total N in green matter of the plant.
-        NUPGMR  = s.ANLV + s.ANST
-
-        # Nitrogen Nutrition Index.
-        """
-        Nitrogen stress
-
-        A crop is assumed to experience N stress at N concentrations below a critical
-        value for unrestricted growth. To quantify crop response to nitrogen shortage, a
-        Nitrogen Nutrition Index (NNI) is defined, ranging from 0 (maximum N shortage)
-        to 1 (no N shortage):
-
-        NNI = (actual crop [N] - residual [N]) / (critical [N] - residual [N])
-
-        Critical crop nitrogen concentration, the lower limit of canopy nitrogen
-        concentration in leaves and stems required for unrestricted growth, has been
-        taken as half the maximum nitrogen concentration. An experimental basis for such
-        an assumption can be derived from the study of Zhen and Leigh (1990), who
-        reported that nitrate accumulation in plant occurs in significant quantity when
-        the N needs to reach the maximum growth were fulfilled and the mean value of
-        nitrate accumulated beyond the criticalNconcentration was about 50% for
-        different stages.
-        """
-        NFGMR = NUPGMR / TBGMR
-        NNI = limit(0.001, 1.0, ((NFGMR-NRMR)/(NOPTMR-NRMR)))
+        # # Average residual N concentration.
+        # NRMR = (s.WLVG * p.RNFLV + s.WST * p.RNFST) / TBGMR
+        #
+        # # Maximum N concentration in the leaves, from which the values of the
+        # # stem and roots are derived, as a function of development stage.
+        # NMAXLV  = p.NMXLV(DVS)
+        # NMAXST  = p.LSNR * NMAXLV
+        # NMAXRT  = p.LRNR * NMAXLV
+        #
+        # # maximum nitrogen concentration of leaves and stem.
+        # NOPTLV  = p.FRNX * NMAXLV
+        # NOPTST  = p.FRNX * NMAXST
+        #
+        # # Maximum N content in the plant.
+        # NOPTS   = NOPTST * s.WST
+        # NOPTL   = NOPTLV * s.WLVG
+        # NOPTMR  = (NOPTL + NOPTS)/TBGMR
+        #
+        # # Total N in green matter of the plant.
+        # NUPGMR  = s.ANLV + s.ANST
+        #
+        # # Nitrogen Nutrition Index.
+        # """
+        # Nitrogen stress
+        #
+        # A crop is assumed to experience N stress at N concentrations below a critical
+        # value for unrestricted growth. To quantify crop response to nitrogen shortage, a
+        # Nitrogen Nutrition Index (NNI) is defined, ranging from 0 (maximum N shortage)
+        # to 1 (no N shortage):
+        #
+        # NNI = (actual crop [N] - residual [N]) / (critical [N] - residual [N])
+        #
+        # Critical crop nitrogen concentration, the lower limit of canopy nitrogen
+        # concentration in leaves and stems required for unrestricted growth, has been
+        # taken as half the maximum nitrogen concentration. An experimental basis for such
+        # an assumption can be derived from the study of Zhen and Leigh (1990), who
+        # reported that nitrate accumulation in plant occurs in significant quantity when
+        # the N needs to reach the maximum growth were fulfilled and the mean value of
+        # nitrate accumulated beyond the criticalNconcentration was about 50% for
+        # different stages.
+        # """
+        # NFGMR = NUPGMR / TBGMR
+        NNI = self.nstress(day, drv)
 
         # -------- Growth rates and dry matter production of plant organs-------*
         #  Biomass partitioning functions under (water and nitrogen)non-stressed
@@ -554,78 +860,82 @@ class Lintul3(SimulationObject):
 
         # N loss due to deathOfLeaves of leaves and roots.
         DRRT = 0. if (DVS < p.DVSDR) else s.WRT * p.RDRRT
-        RNLDLV = p.RNFLV * DLV
-        RNLDRT = p.RNFRT * DRRT
+        # RNLDLV = p.RNFLV * DLV
+        # RNLDRT = p.RNFRT * DRRT
 
         # relative totalGrowthRate rate of roots, leaves, stem
         # and storage organs.
-        RWLVG, RWRT, RWST, RWSO = self.relativeGrowthRates(RGROWTH, FLV, FRT, FST, FSO, DLV, DRRT)
+        # RWLVG, RWRT, RWST, RWSO = self.relativeGrowthRates(RGROWTH, FLV, FRT, FST, FSO, DLV, DRRT)
+        RWLVG = RGROWTH * FLV - DLV
+        RWRT  = RGROWTH * FRT - DRRT
+        RWST  = RGROWTH * FST
+        RWSO  = RGROWTH * FSO
 
 
-        """
-        Nitrogen demand
-
-        Total crop nitrogen demand equals the sum of the nitrogen demands of its
-        individual organs (excluding storage organs, for which nitrogen demand is met by
-        translocation from the other organs, i.e. roots, stems and leaves) (Fig. 3).
-        Nitrogen demand of the individual organs is calculated as the difference
-        betweenmaximum and actual organ nitrogen contents. The maximum nitrogen content
-        is defined as a function of canopy development stage (Drenth et al., 1994).
-        Total N demand (TNdem: gm-2 d-1) of the crop is:
-
-        TNdem = sum(Nmax,i - ANi / dt)
-
-        where Nmax,i is the maximum nitrogen concentration of organ i (gN/g biomass,
-        with i referring to leaves, stems and roots), Wi is the weight of organ i
-        (g biomass/m2), and ANi is the actual nitrogen content of organ i (gN/m2).
-        """
-
-        # N demand of leaves, roots and stem storage organs.
-        NDEMLV   =  max(NMAXLV   * s.WLVG - s.ANLV, 0.)
-        NDEMST   =  max(NMAXST   * s.WST  - s.ANST, 0.)
-        NDEMRT   =  max(NMAXRT   * s.WRT  - s.ANRT, 0.)
-        NDEMSO  =  max(p.NMAXSO * s.WSO  - s.ANSO, 0.) / p.TCNT
-
-        # N supply to the storage organs.
-        NSUPSO  = ATN / p.TCNT if (DVS > p.DVSNT) else 0.0
-
-        # Rate of N uptake in grains.
-        RNSO    =  min(NDEMSO, NSUPSO)
-
-        # Total Nitrogen demand.
-        NDEMTO  = max(0.0, (NDEMLV + NDEMST + NDEMRT))
-
-        """
-        About 75-90% of the total N uptake at harvest takes place before
-        anthesis and, in conditions of high soil fertility, post-anthesis N uptake
-        may contribute up to 25% but would exclusively end up in the grain
-        as protein. Therefore, this nitrogen would not play any role in the
-        calculation of nitrogen stress that influences the biomass formation.
-        Therefore, nitrogen uptake is assumed to cease at anthesis,
-        as nitrogen content in the vegetative parts hardly increases after
-        anthesis
-        """
-
-        #  Nitrogen uptake limiting factor at low moisture conditions in the
-        #  rooted soil layer before anthesis. After anthesis there is no
-        #  uptake from the soil anymore.
-        NLIMIT  = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
-
-        NUPTR   = (max(0., min(NDEMTO, s.TNSOIL))* NLIMIT ) / DELT
-
-        # N translocated from leaves, stem, and roots.
-        RNTLV   = RNSO* ATNLV/ ATN
-        RNTST   = RNSO* ATNST/ ATN
-        RNTRT   = RNSO* ATNRT/ ATN
-
-        # compute the partitioning of the total N uptake rate (NUPTR) over the leaves, stem and roots.
-        RNULV, RNUST, RNURT = self.N_uptakeRates(NDEMLV, NDEMST, NDEMRT, NUPTR, NDEMTO)
-
-        RNST    = RNUST-RNTST
-        RNRT    = RNURT-RNTRT-RNLDRT
-
-        # Rate of change of N in organs
-        RNLV    = RNULV-RNTLV-RNLDLV
+        # """
+        # Nitrogen demand
+        #
+        # Total crop nitrogen demand equals the sum of the nitrogen demands of its
+        # individual organs (excluding storage organs, for which nitrogen demand is met by
+        # translocation from the other organs, i.e. roots, stems and leaves) (Fig. 3).
+        # Nitrogen demand of the individual organs is calculated as the difference
+        # betweenmaximum and actual organ nitrogen contents. The maximum nitrogen content
+        # is defined as a function of canopy development stage (Drenth et al., 1994).
+        # Total N demand (TNdem: gm-2 d-1) of the crop is:
+        #
+        # TNdem = sum(Nmax,i - ANi / dt)
+        #
+        # where Nmax,i is the maximum nitrogen concentration of organ i (gN/g biomass,
+        # with i referring to leaves, stems and roots), Wi is the weight of organ i
+        # (g biomass/m2), and ANi is the actual nitrogen content of organ i (gN/m2).
+        # """
+        #
+        # # N demand of leaves, roots and stem storage organs.
+        # NDEMLV   =  max(NMAXLV   * s.WLVG - s.ANLV, 0.)
+        # NDEMST   =  max(NMAXST   * s.WST  - s.ANST, 0.)
+        # NDEMRT   =  max(NMAXRT   * s.WRT  - s.ANRT, 0.)
+        # NDEMSO  =  max(p.NMAXSO * s.WSO  - s.ANSO, 0.) / p.TCNT
+        #
+        # # N supply to the storage organs.
+        # NSUPSO  = ATN / p.TCNT if (DVS > p.DVSNT) else 0.0
+        #
+        # # Rate of N uptake in grains.
+        # RNSO    =  min(NDEMSO, NSUPSO)
+        #
+        # # Total Nitrogen demand.
+        # NDEMTO  = max(0.0, (NDEMLV + NDEMST + NDEMRT))
+        #
+        # """
+        # About 75-90% of the total N uptake at harvest takes place before
+        # anthesis and, in conditions of high soil fertility, post-anthesis N uptake
+        # may contribute up to 25% but would exclusively end up in the grain
+        # as protein. Therefore, this nitrogen would not play any role in the
+        # calculation of nitrogen stress that influences the biomass formation.
+        # Therefore, nitrogen uptake is assumed to cease at anthesis,
+        # as nitrogen content in the vegetative parts hardly increases after
+        # anthesis
+        # """
+        #
+        # #  Nitrogen uptake limiting factor at low moisture conditions in the
+        # #  rooted soil layer before anthesis. After anthesis there is no
+        # #  uptake from the soil anymore.
+        # NLIMIT  = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
+        #
+        # NUPTR   = (max(0., min(NDEMTO, s.TNSOIL))* NLIMIT ) / DELT
+        #
+        # # N translocated from leaves, stem, and roots.
+        # RNTLV   = RNSO* ATNLV/ ATN
+        # RNTST   = RNSO* ATNST/ ATN
+        # RNTRT   = RNSO* ATNRT/ ATN
+        #
+        # # compute the partitioning of the total N uptake rate (NUPTR) over the leaves, stem and roots.
+        # RNULV, RNUST, RNURT = self.N_uptakeRates(NDEMLV, NDEMST, NDEMRT, NUPTR, NDEMTO)
+        #
+        # RNST    = RNUST-RNTST
+        # RNRT    = RNURT-RNTRT-RNLDRT
+        #
+        # # Rate of change of N in organs
+        # RNLV    = RNULV-RNTLV-RNLDLV
 
         # ****************SOIL NITROGEN SUPPLY***********************************
         """
@@ -645,10 +955,13 @@ class Lintul3(SimulationObject):
         """
 
         #  Soil N supply (g N m-2 d-1) through mineralization.
+        NLIMIT = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
         RTMIN = 0.10 * NLIMIT
 
-        #  Change in inorganic N in soil as function of fertilizer
+         #  Change in inorganic N in soil as function of fertilizer
         #  input, soil N mineralization and crop uptake.
+        NDEMTO = self.kiosk["NDEMTO"]
+        NUPTR = (max(0., min(NDEMTO, s.TNSOIL)) * NLIMIT) / DELT
         RNSOIL = self.FERTNS/DELT -NUPTR + RTMIN
         self.FERTNS = 0.0
 
@@ -656,36 +969,46 @@ class Lintul3(SimulationObject):
         WLV     = s.WLVG + s.WLVD
 
         # Carbon, Nitrogen balance
-        CBALAN = (s.TGROWTH + (p.WRTLI + p.WLVGI + p.WSTI + p.WSOI)
-                         - (WLV + s.WST + s.WSO + s.WRT + s.WDRT))
+        # CBALAN = (s.TGROWTH + (p.WRTLI + p.WLVGI + p.WSTI + p.WSOI)
+        #           - (WLV + s.WST + s.WSO + s.WRT + s.WDRT))
 
-        NBALAN = (s.NUPTT + (self.ANLVI + self.ANSTI + self.ANRTI + self.ANSOI)
-                  - (s.ANLV + s.ANST + s.ANRT + s.ANSO + s.NLOSSL + s.NLOSSR))
+        CBALAN = (s.TGROWTH + (p.WRTLI + p.WLVGI + p.WSTI + p.WSOI)
+                  - (WLV + s.WST + s.WSO + s.WRT + s.WDRT))
+
+        # NBALAN = (s.NUPTT + (self.ANLVI + self.ANSTI + self.ANRTI + self.ANSOI)
+        #           - (s.ANLV + s.ANST + s.ANRT + s.ANSO + s.NLOSSL + s.NLOSSR))
 
         s.rLAI    = RLAI
-        s.rANLV   = RNLV
-        s.rANST   = RNST
-        s.rANRT   = RNRT
-        s.rANSO   = RNSO
-        s.rNUPTT  = NUPTR
-        s.rNLOSSL = RNLDLV
-        s.rNLOSSR = RNLDRT
-        s.rWLVG   = RWLVG
-        s.rWLVD   = DLV
-        s.rWST    = RWST
-        s.rWSO    = RWSO
-        s.rWRT    = RWRT
-        s.rROOTD  = r.RROOTD
+        # s.rANLV   = RNLV
+        # s.rANST   = RNST
+        # s.rANRT   = RNRT
+        # s.rANSO   = RNSO
+        # s.rNUPTT  = NUPTR
+        # s.rNLOSSL = RNLDLV
+        # s.rNLOSSR = RNLDRT
+        s.rWLVG = RWLVG
+        s.rWLVD = DLV
+        s.rWST = RWST
+        s.rWSO = RWSO
+        s.rWRT = RWRT
+        s.rROOTD = r.RROOTD
         s.rTGROWTH = RGROWTH
-        s.rWDRT   = DRRT
+        s.rWDRT = DRRT
         s.rCUMPAR = PAR
         s.rTNSOIL = RNSOIL
 
-        if abs(NBALAN) > 0.0001:
-            raise NitrogenBalanceError("Nitrogen un-balance in crop model at day %s" % day)
+        # Specific rate variable needed by nutrient module
+        r.DLV = DLV  # rate of leaf death
+        r.DRRT = DRRT  # rate of root death
+
+
+        # if abs(NBALAN) > 0.0001:
+        #     raise NitrogenBalanceError("Nitrogen un-balance in crop model at day %s" % day)
         
         if abs(CBALAN) > 0.0001:
             raise CarbonBalanceError("Carbon un-balance in crop model at day %s" % day)
+
+        self.n_dynamics.calc_rates(day, drv)
 
     @prepare_states
     def integrate(self, day, delt=1.0):
@@ -705,6 +1028,11 @@ class Lintul3(SimulationObject):
 
         # Compute some derived states
         s.TAGBM = s.WLVG + s.WLVD + s.WST + s.WSO
+        # Total living vegetative biomass.
+        s.TBGMR = s.WLVG + s.WST
+
+        self.n_dynamics.integrate(day)
+
 
     def _calc_potential_evapotranspiration(self, drv):
         """
@@ -830,49 +1158,49 @@ class Lintul3(SimulationObject):
             RGROWTH *= exp(-p.NLUE * (1.0 - NNI))
         return RGROWTH
 
-    def relativeGrowthRates(self, RGROWTH, FLV, FRT, FST, FSO, DLV, DRRT):
-        """
-        compute the relative totalGrowthRate rate of roots, leaves, stem 
-        and storage organs.
-        Obsolete subroutine name: RELGR                   
-        """
-      
-        RWLVG = RGROWTH * FLV - DLV
-        RWRT  = RGROWTH * FRT - DRRT
-        RWST  = RGROWTH * FST
-        RWSO  = RGROWTH * FSO
+    # def relativeGrowthRates(self, RGROWTH, FLV, FRT, FST, FSO, DLV, DRRT):
+    #     """
+    #     compute the relative totalGrowthRate rate of roots, leaves, stem
+    #     and storage organs.
+    #     Obsolete subroutine name: RELGR
+    #     """
+    #
+    #     RWLVG = RGROWTH * FLV - DLV
+    #     RWRT  = RGROWTH * FRT - DRRT
+    #     RWST  = RGROWTH * FST
+    #     RWSO  = RGROWTH * FSO
+    #
+    #     return RWLVG, RWRT, RWST, RWSO
 
-        return RWLVG, RWRT, RWST, RWSO
+    # def N_uptakeRates(self, NDEML, NDEMS, NDEMR, NUPTR, NDEMTO):
+    #     """
+    #     compute the partitioning of the total N uptake rate (NUPTR)
+    #     over the leaves, stem, and roots.
+    #     Obsolete subroutine name: RNUSUB
+    #     """
+    #
+    #     if (NDEMTO > 0):
+    #         RNULV = (NDEML / NDEMTO)* NUPTR
+    #         RNUST = (NDEMS / NDEMTO)* NUPTR
+    #         RNURT = (NDEMR / NDEMTO)* NUPTR
+    #
+    #         return RNULV, RNUST, RNURT
+    #     else:
+    #         return 0.0, 0.0, 0.0
 
-    def N_uptakeRates(self, NDEML, NDEMS, NDEMR, NUPTR, NDEMTO):
-        """
-        compute the partitioning of the total N uptake rate (NUPTR) 
-        over the leaves, stem, and roots.
-        Obsolete subroutine name: RNUSUB                                      
-        """
-      
-        if (NDEMTO > 0):
-            RNULV = (NDEML / NDEMTO)* NUPTR
-            RNUST = (NDEMS / NDEMTO)* NUPTR
-            RNURT = (NDEMR / NDEMTO)* NUPTR
-
-            return RNULV, RNUST, RNURT
-        else:
-            return 0.0, 0.0, 0.0
-
-    def translocatable_N(self):      
-        """
-        compute the translocatable N in the organs.
-        Obsolete subroutine name: NTRLOC                                                   
-        """
-        s = self.states
-        p = self.params
-        ATNLV = max (0., s.ANLV - s.WLVG * p.RNFLV)
-        ATNST = max (0., s.ANST - s.WST  * p.RNFST)
-        ATNRT = min((ATNLV + ATNST) * p.FNTRT, s.ANRT - s.WRT * p.RNFRT)
-        ATN   = ATNLV +  ATNST + ATNRT
-        
-        return ATNLV, ATNST, ATNRT, ATN
+    # def translocatable_N(self):
+    #     """
+    #     compute the translocatable N in the organs.
+    #     Obsolete subroutine name: NTRLOC
+    #     """
+    #     s = self.states
+    #     p = self.params
+    #     ATNLV = max (0., s.ANLV - s.WLVG * p.RNFLV)
+    #     ATNST = max (0., s.ANST - s.WST  * p.RNFST)
+    #     ATNRT = min((ATNLV + ATNST) * p.FNTRT, s.ANRT - s.WRT * p.RNFRT)
+    #     ATN   = ATNLV +  ATNST + ATNRT
+    #
+    #     return ATNLV, ATNST, ATNRT, ATN
 
     def deathRateOfLeaves(self, TSUM, RDRTMP, NNI, SLA):
         """
