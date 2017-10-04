@@ -31,6 +31,150 @@ def m2mm(x):
     return x*1000.
 
 
+class Lintul3Partitioning(SimulationObject):
+    """Compute partitioning factors for LINTUL3.
+
+    Biomass formed at any time during crop growth is partitioned amongst organs
+    (Fig. 1), i.e. roots, stems, leaves and storage organs, with partitioning
+    factors defined as a function of development stage (Fig. 2) (Drenth et al.,
+    1994), which thus provides the rates of growth of these organs:
+
+    dW/dt[i] = Pc[i] * dW / dt
+
+    where (dW/dt) is the rate of biomass growth (gm-2 d-1); (dW/dt)[i] and Pc[i] are
+    the rate of growth (gm-2 d-1) of and the biomass partitioning factor to organ i
+    (g organ-i g-1 biomass), respectively. Leaf, stem and root weights of the
+    seedlings at the time of transplanting are input parameters for the model. The
+    time course of weights of these organs follows from integration of their net
+    growth rates, i.e. growth rates minus death rates, the latter being defined as a
+    function of physiological age, shading and stress.
+
+    Modification are applied to root/shoot ratio in case of water/nitrogen stress.
+
+    *parameters*
+    ======== =============================================== =======  ==========
+     Name     Description                                     Type     Unit
+    ======== =============================================== =======  ==========
+    FLVTB    Partitioning coefficients
+    FRTTB    Partitioning coefficients
+    FSOTB    Partitioning coefficients
+    FSTTB    Partitioning coefficients
+    NPART    Coefficient for the effect of N stress on leaf
+             biomass reduction                                          -
+    ======== =============================================== =======  ==========
+    """
+
+    class Parameters(ParamTemplate):
+        FLVTB = AfgenTrait()  # Partitioning coefficients
+        FRTTB = AfgenTrait()  # Partitioning coefficients
+        FSOTB = AfgenTrait()  # Partitioning coefficients
+        FSTTB = AfgenTrait()  # Partitioning coefficients
+        NPART = Float(-99)  # Coefficient for the effect of N stress on leaf biomass reduction
+
+    def initialize(self, day, kiosk, parvalues):
+        self.params = self.Parameters(parvalues)
+
+    def __call__(self, day, drv):
+        """Dry matter partitioning fractions to leaves, stem and storage organs.
+
+        Obsolete subroutine name: SUBPAR
+        """
+        k = self.kiosk
+        p = self.params
+        FRTWET = p.FRTTB(k.DVS)
+        FLVT = p.FLVTB(k.DVS)
+        FSTT = p.FSTTB(k.DVS)
+        FSOT = p.FSOTB(k.DVS)
+
+        if k.TRANRF < k.NNI:
+            #  Water stress is more severe as compared to nitrogen stress and
+            #  partitioning will follow the original assumptions of LINTUL2*
+            FRTMOD = max(1., 1. / (k.TRANRF + 0.5))
+            FRT = FRTWET * FRTMOD
+            FSHMOD = (1. - FRT) / (1. - FRT / FRTMOD)
+            FLV = FLVT * FSHMOD
+            FST = FSTT * FSHMOD
+            FSO = FSOT * FSHMOD
+        else:
+            # Nitrogen stress is more severe as compared to water stress and the
+            # less partitioning to leaves will go to the roots*
+            FLVMOD = exp(-p.NPART * (1.0 - k.NNI))
+            FLV = FLVT * FLVMOD
+            MODIF = (1. - FLV) / (1. - (FLV / FLVMOD))
+            FST = FSTT * MODIF
+            FRT = FRTWET * MODIF
+            FSO = FSOT * MODIF
+
+        return FRT, FLV, FST, FSO
+
+
+class Lintul3NetGrowthRate(SimulationObject):
+    """Compute the net growth rate as LINTUL3 does not take into account
+    assimilation and respiration separately.
+
+    Monteith (1977), Gallagher and Biscoe (1978) and Monteith (1990) have
+    shown that biomass formed per unit intercepted light, LUE (Light
+    Use Efficiency, g dry matter MJ-1), is relatively more stable. Hence,
+    maximum daily growth rate can be defined as the product of
+    intercepted PAR (photosynthetically active radiation, MJm-2 d-1)
+    and LUE. Intercepted PAR depends on incident solar radiation,
+    the fraction that is photosynthetically active (0.5) (Monteith and
+    Unsworth, 1990; Spitters, 1990), and LAI (m2 leaf m-2 soil) according
+    to Lambert-Beer's law:
+
+      Q = 0.5Q0[1 - e(-k LAI)]
+
+    where Q is intercepted PAR(MJm-2 d-1), Q0 is daily global radiation
+    (MJm-2 d-1), and k is the attenuation coefficient for PAR in the
+    canopy.
+
+    Obsolete subroutine name: GROWTH
+
+    *parameters*
+    ======== =============================================== =======  ==========
+     Name     Description                                     Type     Unit
+    ======== =============================================== =======  ==========
+    K        Light attenuation coefficient                              m²/m²
+    LUE      Light use efficiency                                       g/MJ
+    NLAI     Coefficient for the effect of N stress on LAI
+             reduction(during juvenile phase)                           -
+    NLUE     Coefficient of reduction of LUE under nitrogen
+             stress, epsilon                                            -
+    ======== =============================================== =======  ==========
+
+    *External variables:*
+    =========== ================================================= ==== ===============
+     Name        Description                                      Pbl      Unit
+    =========== ================================================= ==== ===============
+     TRANRF      Transpiration reduction factor calculated         Y      -
+     NNI         Nitrogen Nutrition Index                          Y      -
+    =========== ================================================= ==== ===============
+    """
+
+    class Parameters(ParamTemplate):
+        K = Float(-99)  # light extinction coefficient
+        LUE = Float(-99)  # Light use efficiency.
+        NLUE = Float(-99)  # Extinction coefficient for  Nitrogen distribution down the canopy
+
+    def initialize(self, day, kiosk, parvalues):
+        self.params = self.Parameters(parvalues)
+
+    def __call__(self, day, drv):
+        p = self.params
+        k = self.kiosk
+
+        DTR = joule2megajoule(drv.IRRAD)
+        PARINT = 0.5 * DTR * (1. - exp(-p.K * k.LAI))
+        RGROWTH = p.LUE * PARINT
+
+        # Reduction factor due to nitrogen stress
+        NRF = exp(-p.NLUE * (1.0 - k.NNI))
+        # apply strongest reduction factor to net growth rate
+        RGROWTH *= min(k.TRANRF, NRF)
+
+        return RGROWTH
+
+
 class Lintul3NitrogenStress(SimulationObject):
     """Computes nitrogen stress
 
@@ -452,22 +596,16 @@ class Lintul3(SimulationObject):
              storage organs                                             -
     FRNX     Critical N, as a fraction of maximum N
              concentration                                              -
-    K        Light attenuation coefficient                              m²/m²
     LAICR    critical LAI above which mutual shading of
              leaves occurs,                                             °C/d
     LRNR     Maximum N concentration of root as fraction of
              that of leaves                                             g/g
     LSNR     Maximum N concentration of stem as fraction of
              that of leaves                                             g/g
-    LUE      Light use efficiency                                       g/MJ
     NLAI     Coefficient for the effect of N stress on LAI
              reduction(during juvenile phase)                           -
-    NLUE     Coefficient of reduction of LUE under nitrogen
-             stress, epsilon                                            -
     NMAXSO   Maximum concentration of nitrogen in storage
              organs                                                     g/g
-    NPART    Coefficient for the effect of N stress on leaf
-             biomass reduction                                          -
     NSLA     Coefficient for the effect of N stress on SLA
              reduction                                                  -
     RDRNS    Relative death rate of leaf weight due to N
@@ -499,10 +637,6 @@ class Lintul3(SimulationObject):
     ======== =============================================== =======  ==========
      Name     Description                                     Type     Unit
     ======== =============================================== =======  ==========
-    FLVTB    Partitioning coefficients
-    FRTTB    Partitioning coefficients
-    FSOTB    Partitioning coefficients
-    FSTTB    Partitioning coefficients
     NMXLV    Maximum N concentration in the leaves, from
              which the values of the stem and roots are derived,
              as a  function of development stage
@@ -573,6 +707,8 @@ class Lintul3(SimulationObject):
     pheno = Instance(SimulationObject)
     nstress = Instance(SimulationObject)
     n_dynamics = Instance(SimulationObject)
+    netgrowthrate = Instance(SimulationObject)
+    partitioning = Instance(SimulationObject)
     # placeholder for effective N application rate from the _on_APPLY_N event handler.
     FERTNS = 0.0
     # placeholder for initial leaf area index
@@ -583,12 +719,8 @@ class Lintul3(SimulationObject):
         DVSI = Float(-99.)  # Development stage at start of the crop
         DVSDR = Float(-99)  # Development stage above which deathOfLeaves of leaves and roots start.
         DVSNLT = Float(-99)  # development stage N-limit
-        K = Float(-99)  # light extinction coefficient
         LAICR = Float(-99)  # (oC d)-1, critical LAI above which mutual shading of leaves occurs,
-        LUE = Float(-99)  # Light use efficiency.
         NLAI = Float(-99)  # Coefficient for the effect of N stress on LAI reduction(during juvenile phase)
-        NLUE = Float(-99)  # Extinction coefficient for  Nitrogen distribution down the canopy
-        NPART = Float(-99)  # Coefficient for the effect of N stress on leaf biomass reduction
         NSLA = Float(-99)  # Coefficient for the effect of N stress on SLA reduction
         RDRSHM = Float(-99)  # and the maximum relative deathOfLeaves rate of leaves due to shading.
         RGRL = Float(-99)  # Relative totalGrowthRate rate of LAI at the exponential totalGrowthRate phase
@@ -606,10 +738,10 @@ class Lintul3(SimulationObject):
         WMFAC = Bool(False)  # water management (0 = irrigated up to the field capacity, 1= irrigated up to saturation)
         RDRNS = Float(-99)  # Relative deathOfLeaves rate of leaves due to N stress.
         RDRRT = Float(-99)  # Relative deathOfLeaves rate of roots.
-        FLVTB = AfgenTrait()  # Partitioning coefficients
-        FRTTB = AfgenTrait()  # Partitioning coefficients
-        FSOTB = AfgenTrait()  # Partitioning coefficients
-        FSTTB = AfgenTrait()  # Partitioning coefficients
+        # FLVTB = AfgenTrait()  # Partitioning coefficients
+        # FRTTB = AfgenTrait()  # Partitioning coefficients
+        # FSOTB = AfgenTrait()  # Partitioning coefficients
+        # FSTTB = AfgenTrait()  # Partitioning coefficients
         RDRT = AfgenTrait()  #
         SLACF = AfgenTrait()  # Leaf area correction function as a function of development stage, DVS.
         ROOTDI = Float(-99)  # initial rooting depth [m]
@@ -628,7 +760,6 @@ class Lintul3(SimulationObject):
         ROOTD = Float(-99.)  # Actual root depth [m]
         TGROWTH = Float(-99.)  # Total growth
         WDRT = Float(-99.)  # weight of dead roots
-        CUMPAR = Float(-99.)
         TNSOIL = Float(-99.)  # Amount of inorganic N available for crop uptake.
         TAGBM = Float(-99.)  # Total aboveground biomass [g /m-2)
         TBGMR = Float(-99.)  # Total aboveground green (living) biomas
@@ -655,7 +786,7 @@ class Lintul3(SimulationObject):
         self.kiosk = kiosk
         self.params = self.Parameters(parvalues)
         self.rates = self.Lintul3Rates(self.kiosk,
-                                       publish=["PEVAP", "TRAN", "RROOTD", "DLV", "DRRT"])
+                                       publish=["PEVAP", "TRAN", "RROOTD", "DLV", "DRRT", "NNI", "TRANRF"])
 
         self._connect_signal(self._on_APPLY_N, signals.apply_n)
 
@@ -688,9 +819,11 @@ class Lintul3(SimulationObject):
         # Initialize the associated rates of the states
         self.states.initialize_rates()
 
-        # Init nutrient dynamics module
+        # Init sub module
         self.nstress = Lintul3NitrogenStress(day, kiosk, parvalues)
         self.n_dynamics = Lintul3NitrogenDynamics(day, kiosk, parvalues)
+        self.netgrowthrate = Lintul3NetGrowthRate(day, kiosk, parvalues)
+        self.partitioning = Lintul3Partitioning(day, kiosk, parvalues)
 
     def _on_APPLY_N(self, amount, recovery):
         """Receive signal for N application with amount the nitrogen amount in g N m-2 and
@@ -707,17 +840,6 @@ class Lintul3(SimulationObject):
         k = self.kiosk
 
         DELT = 1
-
-        DTR = joule2megajoule(drv.IRRAD)
-        PAR = DTR * 0.50
-        DAVTMP = 0.5 * (drv.TMIN + drv.TMAX)
-        DTEFF = max(0., DAVTMP - p.TBASE)
-        
-        # potential rates of evaporation and transpiration:
-        r.PEVAP, r.PTRAN = self._calc_potential_evapotranspiration(drv)
-
-        # actual rate of transpiration:
-        r.TRAN = self._calc_actual_transpiration(r.PTRAN, k.WC)
 
         # Crop phenology
         #
@@ -737,6 +859,15 @@ class Lintul3(SimulationObject):
 
         # code below is executed only POST-emergence
 
+        # Effective temperature above base temp
+        DTEFF = max(0., drv.TEMP - p.TBASE)
+
+        # potential rates of evaporation and transpiration:
+        r.PEVAP, r.PTRAN = self._calc_potential_evapotranspiration(drv)
+
+        # actual rate of transpiration:
+        r.TRAN = self._calc_actual_transpiration(r.PTRAN, k.WC)
+
         # Nitrogen Nutrition Index.
         r.NNI = self.nstress(day, drv)
 
@@ -744,27 +875,10 @@ class Lintul3(SimulationObject):
         r.TRANRF = r.TRAN / r.PTRAN
 
         # total totalGrowthRate rate.
-        RGROWTH = self._total_growth_rate(DTR, r.TRANRF, r.NNI)
+        RGROWTH = self.netgrowthrate(day, drv)
 
         # Biomass partitioning
-        #
-        # Biomass formed at any time during crop growth is partitioned amongst organs
-        # (Fig. 1), i.e. roots, stems, leaves and storage organs, with partitioning
-        # factors defined as a function of development stage (Fig. 2) (Drenth et al.,
-        # 1994), which thus provides the rates of growth of these organs:
-        #
-        # dW/dt[i] = Pc[i] * dW / dt
-        #
-        # where (dW/dt) is the rate of biomass growth (gm-2 d-1); (dW/dt)[i] and Pc[i] are
-        # the rate of growth (gm-2 d-1) of and the biomass partitioning factor to organ i
-        # (g organ-i g-1 biomass), respectively. Leaf, stem and root weights of the
-        # seedlings at the time of transplanting are input parameters for the model. The
-        # time course of weights of these organs follows from integration of their net
-        # growth rates, i.e. growth rates minus death rates, the latter being defined as a
-        # function of physiological age, shading and stress.
-        #
-        # Modification are applied to root/shoot ratio in case of water/nitrogen stress.
-        FRT, FLV, FST, FSO = self._drymatter_partitioning_fractions(p.NPART, r.TRANRF, r.NNI)
+        FRT, FLV, FST, FSO = self.partitioning(day, drv)
 
         # Leaf area development
         #
@@ -798,7 +912,7 @@ class Lintul3(SimulationObject):
         GLAI = self._growth_leaf_area(DTEFF, self.LAII, DELT, SLA, GLV, k.WC, k.DVS, r.TRANRF, r.NNI)
 
         # Relative and actual death rate of leaves due to senescence/ageing.
-        RDRTMP = p.RDRT(DAVTMP)
+        RDRTMP = p.RDRT(drv.TEMP)
         DLV, DLAI = self._death_rate_of_leaves(k.TSUM, RDRTMP, r.NNI, SLA)
 
         # Net rate of change of Leaf area.
@@ -867,7 +981,6 @@ class Lintul3(SimulationObject):
         s.rROOTD = r.RROOTD
         s.rTGROWTH = RGROWTH
         s.rWDRT = DRRT
-        s.rCUMPAR = PAR
         s.rTNSOIL = RNSOIL
 
         # Specific rate variable needed by nutrient module
@@ -966,73 +1079,38 @@ class Lintul3(SimulationObject):
         
         return GLAI
 
-    def _drymatter_partitioning_fractions(self, NPART, TRANRF, NNI):
-        """Dry matter partitioning fractions to leaves, stem and storage organs.
-
-        Obsolete subroutine name: SUBPAR
-        """
-        k = self.kiosk
-        p = self.params
-        FRTWET = p.FRTTB(k.DVS)
-        FLVT = p.FLVTB(k.DVS)
-        FSTT = p.FSTTB(k.DVS)
-        FSOT = p.FSOTB(k.DVS)
-
-        if TRANRF < NNI:
-            #  Water stress is more severe as compared to nitrogen stress and
-            #  partitioning will follow the original assumptions of LINTUL2*
-            FRTMOD = max(1., 1./(TRANRF+0.5))
-            FRT = FRTWET * FRTMOD
-            FSHMOD = (1. - FRT) / (1. - FRT/FRTMOD)
-            FLV = FLVT * FSHMOD
-            FST = FSTT * FSHMOD
-            FSO = FSOT * FSHMOD
-        else:
-            # Nitrogen stress is more severe as compared to water stress and the
-            # less partitioning to leaves will go to the roots*
-            FLVMOD = exp(-NPART * (1.0 - NNI))
-            FLV = FLVT * FLVMOD
-            MODIF = (1. - FLV)/(1. - (FLV/FLVMOD))
-            FST = FSTT * MODIF
-            FRT = FRTWET * MODIF
-            FSO = FSOT * MODIF
-    
-        return FRT, FLV, FST, FSO
-    
-    def _total_growth_rate(self, DTR, TRANRF, NNI):
-        """Compute the total totalGrowthRate rate.
-
-        Monteith (1977), Gallagher and Biscoe (1978) and Monteith (1990) have
-        shown that biomass formed per unit intercepted light, LUE (Light
-        Use Efficiency, g dry matter MJ-1), is relatively more stable. Hence,
-        maximum daily growth rate can be defined as the product of
-        intercepted PAR (photosynthetically active radiation, MJm-2 d-1)
-        and LUE. Intercepted PAR depends on incident solar radiation,
-        the fraction that is photosynthetically active (0.5) (Monteith and
-        Unsworth, 1990; Spitters, 1990), and LAI (m2 leafm-2 soil) according
-        to Lambert-Beer's law:
-
-          Q = 0.5Q0[1 - e(-k LAI)]
-
-        where Q is intercepted PAR(MJm-2 d-1), Q0 is daily global radiation
-        (MJm-2 d-1), and k is the attenuation coefficient for PAR in the
-        canopy.
-
-        Obsolete subroutine name: GROWTH
-        """
-        p = self.params
-        PARINT = 0.5 * DTR * (1. - exp(-p.K * self.states.LAI))
-        RGROWTH = p.LUE * PARINT
-        
-        if TRANRF <= NNI:
-            #  Water stress is more severe as compared to nitrogen stress and
-            #  partitioning will follow the original assumptions of LINTUL2*
-            RGROWTH *= TRANRF
-        else:
-            #  Nitrogen stress is more severe as compared to water stress and the
-            #  less partitioning to leaves will go to the roots*
-            RGROWTH *= exp(-p.NLUE * (1.0 - NNI))
-        return RGROWTH
+    # def _drymatter_partitioning_fractions(self, NPART, TRANRF, NNI):
+        # """Dry matter partitioning fractions to leaves, stem and storage organs.
+        #
+        # Obsolete subroutine name: SUBPAR
+        # """
+        # k = self.kiosk
+        # p = self.params
+        # FRTWET = p.FRTTB(k.DVS)
+        # FLVT = p.FLVTB(k.DVS)
+        # FSTT = p.FSTTB(k.DVS)
+        # FSOT = p.FSOTB(k.DVS)
+        #
+        # if TRANRF < NNI:
+        #     #  Water stress is more severe as compared to nitrogen stress and
+        #     #  partitioning will follow the original assumptions of LINTUL2*
+        #     FRTMOD = max(1., 1./(TRANRF+0.5))
+        #     FRT = FRTWET * FRTMOD
+        #     FSHMOD = (1. - FRT) / (1. - FRT/FRTMOD)
+        #     FLV = FLVT * FSHMOD
+        #     FST = FSTT * FSHMOD
+        #     FSO = FSOT * FSHMOD
+        # else:
+        #     # Nitrogen stress is more severe as compared to water stress and the
+        #     # less partitioning to leaves will go to the roots*
+        #     FLVMOD = exp(-NPART * (1.0 - NNI))
+        #     FLV = FLVT * FLVMOD
+        #     MODIF = (1. - FLV)/(1. - (FLV/FLVMOD))
+        #     FST = FSTT * MODIF
+        #     FRT = FRTWET * MODIF
+        #     FSO = FSOT * MODIF
+        #
+        # return FRT, FLV, FST, FSO
 
     def _death_rate_of_leaves(self, TSUM, RDRTMP, NNI, SLA):
         """
