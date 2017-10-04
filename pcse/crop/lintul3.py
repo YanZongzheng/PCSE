@@ -1079,39 +1079,6 @@ class Lintul3(SimulationObject):
         
         return GLAI
 
-    # def _drymatter_partitioning_fractions(self, NPART, TRANRF, NNI):
-        # """Dry matter partitioning fractions to leaves, stem and storage organs.
-        #
-        # Obsolete subroutine name: SUBPAR
-        # """
-        # k = self.kiosk
-        # p = self.params
-        # FRTWET = p.FRTTB(k.DVS)
-        # FLVT = p.FLVTB(k.DVS)
-        # FSTT = p.FSTTB(k.DVS)
-        # FSOT = p.FSOTB(k.DVS)
-        #
-        # if TRANRF < NNI:
-        #     #  Water stress is more severe as compared to nitrogen stress and
-        #     #  partitioning will follow the original assumptions of LINTUL2*
-        #     FRTMOD = max(1., 1./(TRANRF+0.5))
-        #     FRT = FRTWET * FRTMOD
-        #     FSHMOD = (1. - FRT) / (1. - FRT/FRTMOD)
-        #     FLV = FLVT * FSHMOD
-        #     FST = FSTT * FSHMOD
-        #     FSO = FSOT * FSHMOD
-        # else:
-        #     # Nitrogen stress is more severe as compared to water stress and the
-        #     # less partitioning to leaves will go to the roots*
-        #     FLVMOD = exp(-NPART * (1.0 - NNI))
-        #     FLV = FLVT * FLVMOD
-        #     MODIF = (1. - FLV)/(1. - (FLV/FLVMOD))
-        #     FST = FSTT * MODIF
-        #     FRT = FRTWET * MODIF
-        #     FSO = FSOT * MODIF
-        #
-        # return FRT, FLV, FST, FSO
-
     def _death_rate_of_leaves(self, TSUM, RDRTMP, NNI, SLA):
         """
         compute the relative deathOfLeaves rate of leaves due to age, 
