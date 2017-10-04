@@ -17,10 +17,18 @@ from ..crop.phenology import DVS_Phenology as Phenology
 from ..exceptions import CarbonBalanceError, NitrogenBalanceError
 from .. import signals
 
-# some lambdas to make unit conversion explicit.
-cm2mm = lambda x: x*10.
-joule2megajoule = lambda x: x/1e6
-m2mm = lambda x: x*1000
+
+# some functions to make unit conversion explicit.
+def cm2mm(x):
+    return x*10.
+
+
+def joule2megajoule(x):
+    return x/1e6
+
+
+def m2mm(x):
+    return x*1000.
 
 
 class Lintul3NitrogenStress(SimulationObject):
@@ -73,20 +81,14 @@ class Lintul3NitrogenStress(SimulationObject):
     @prepare_rates
     def __call__(self, day, drv):
         p = self.params
-
-        WLVG = self.kiosk["WLVG"]
-        WST = self.kiosk["WST"]
-        TBGMR = self.kiosk["TBGMR"]
-        DVS = self.kiosk["DVS"]
-        ANLV = self.kiosk["ANLV"]
-        ANST = self.kiosk["ANST"]
+        k = self.kiosk
 
         # Average residual N concentration.
-        NRMR = (WLVG * p.RNFLV + WST * p.RNFST) / TBGMR
+        NRMR = (k.WLVG * p.RNFLV + k.WST * p.RNFST) / k.TBGMR
 
         # Maximum N concentration in the leaves, from which the values of the
         # stem and roots are derived, as a function of development stage.
-        NMAXLV = p.NMXLV(DVS)
+        NMAXLV = p.NMXLV(k.DVS)
         NMAXST = p.LSNR * NMAXLV
 
         # maximum nitrogen concentration of leaves and stem.
@@ -94,15 +96,15 @@ class Lintul3NitrogenStress(SimulationObject):
         NOPTST = p.FRNX * NMAXST
 
         # Maximum N content in the plant.
-        NOPTS = NOPTST * WST
-        NOPTL = NOPTLV * WLVG
-        NOPTMR = (NOPTL + NOPTS) / TBGMR
+        NOPTS = NOPTST * k.WST
+        NOPTL = NOPTLV * k.WLVG
+        NOPTMR = (NOPTL + NOPTS) / k.TBGMR
 
         # Total N in green matter of the plant.
-        NUPGMR = ANLV + ANST
+        NUPGMR = k.ANLV + k.ANST
 
         # Nitrogen Nutrition Index.
-        NFGMR = NUPGMR / TBGMR
+        NFGMR = NUPGMR / k.TBGMR
         NNI = limit(0.001, 1.0, ((NFGMR - NRMR) / (NOPTMR - NRMR)))
 
         return NNI
@@ -218,7 +220,6 @@ class Lintul3NitrogenDynamics(SimulationObject):
         NUPTT = Float(-99.)  # Total uptake of N over time (g N m-2)
         NLOSSL = Float(-99.)  # total N loss by leaves
         NLOSSR = Float(-99.)  # total N loss by roots
-        NNI = Float(-99)  # Nitrogen nutrition index
         NDEMTO = Float(-99)  # Total nitrogen demand
 
     def initialize(self, day, kiosk, parvalues):
@@ -246,23 +247,17 @@ class Lintul3NitrogenDynamics(SimulationObject):
     def calc_rates(self, day, drv):
         p = self.params
         s = self.states
-
-        WLVG = self.kiosk["WLVG"]
-        WST = self.kiosk["WST"]
-        WRT = self.kiosk["WRT"]
-        WSO = self.kiosk["WSO"]
-        DVS = self.kiosk["DVS"]
-        WC = self.kiosk["WC"]
+        k = self.kiosk
 
         # translocatable N in leaves, stem, roots and storage organs.
-        ATNLV = max(0., s.ANLV - WLVG * p.RNFLV)
-        ATNST = max(0., s.ANST - WST * p.RNFST)
-        ATNRT = min((ATNLV + ATNST) * p.FNTRT, s.ANRT - WRT * p.RNFRT)
+        ATNLV = max(0., s.ANLV - k.WLVG * p.RNFLV)
+        ATNST = max(0., s.ANST - k.WST * p.RNFST)
+        ATNRT = min((ATNLV + ATNST) * p.FNTRT, s.ANRT - k.WRT * p.RNFRT)
         ATN = ATNLV + ATNST + ATNRT
 
         # Loss of nitrogen due to plant death rates
-        RNLDLV = p.RNFLV * self.kiosk["DLV"]
-        RNLDRT = p.RNFRT * self.kiosk["DRRT"]
+        RNLDLV = p.RNFLV * k.DLV
+        RNLDRT = p.RNFRT * k.DRRT
 
         # Nitrogen demand
         #
@@ -283,13 +278,13 @@ class Lintul3NitrogenDynamics(SimulationObject):
         # N demand of leaves, roots and stem storage organs.
         # Maximum N concentration in the leaves, from which the values of the
         # stem and roots are derived, as a function of development stage.
-        NMAXLV = p.NMXLV(DVS)
+        NMAXLV = p.NMXLV(k.DVS)
         NMAXST = p.LSNR * NMAXLV
         NMAXRT = p.LRNR * NMAXLV
-        NDEMLV = max(NMAXLV * WLVG - s.ANLV, 0.)
-        NDEMST = max(NMAXST * WST - s.ANST, 0.)
-        NDEMRT = max(NMAXRT * WRT - s.ANRT, 0.)
-        NDEMSO = max(p.NMAXSO * WSO - s.ANSO, 0.) / p.TCNT
+        NDEMLV = max(NMAXLV * k.WLVG - s.ANLV, 0.)
+        NDEMST = max(NMAXST * k.WST - s.ANST, 0.)
+        NDEMRT = max(NMAXRT * k.WRT - s.ANRT, 0.)
+        NDEMSO = max(p.NMAXSO * k.WSO - s.ANSO, 0.) / p.TCNT
 
         # Total Nitrogen demand.
         NDEMTO = max(0.0, (NDEMLV + NDEMST + NDEMRT))
@@ -306,7 +301,7 @@ class Lintul3NitrogenDynamics(SimulationObject):
         # anthesis
 
         # N supply to the storage organs.
-        NSUPSO = ATN / p.TCNT if (DVS > p.DVSNT) else 0.0
+        NSUPSO = ATN / p.TCNT if (k.DVS > p.DVSNT) else 0.0
 
         # Rate of N uptake in grains.
         RNSO = min(NDEMSO, NSUPSO)
@@ -314,11 +309,11 @@ class Lintul3NitrogenDynamics(SimulationObject):
         #  Nitrogen uptake limiting factor at low moisture conditions in the
         #  rooted soil layer before anthesis. After anthesis there is no
         #  uptake from the soil anymore.
-        NLIMIT = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
+        NLIMIT = 1.0 if (k.DVS < p.DVSNLT) and (k.WC >= p.WCWP) else 0.0
 
         DELT = 1.0
         TNSOIL = self.kiosk["TNSOIL"]
-        NUPTR = (max(0., min(NDEMTO, TNSOIL)) * NLIMIT) / DELT
+        NUPTR = (max(0., min(NDEMTO, k.TNSOIL)) * NLIMIT) / DELT
 
         # N translocated from leaves, stem, and roots.
         RNTLV = RNSO * ATNLV / ATN
@@ -353,24 +348,19 @@ class Lintul3NitrogenDynamics(SimulationObject):
 
         s = self.states
         p = self.params
+        k = self.kiosk
 
         s.integrate(delta=1.0)
-
-        WLVG = self.kiosk["WLVG"]
-        WST = self.kiosk["WST"]
-        WRT = self.kiosk["WRT"]
-        WSO = self.kiosk["WSO"]
-        DVS = self.kiosk["DVS"]
 
         # N demand of leaves, roots and stem storage organs.
         # Maximum N concentration in the leaves, from which the values of the
         # stem and roots are derived, as a function of development stage.
-        NMAXLV = p.NMXLV(DVS)
+        NMAXLV = p.NMXLV(k.DVS)
         NMAXST = p.LSNR * NMAXLV
         NMAXRT = p.LRNR * NMAXLV
-        NDEMLV = max(NMAXLV * WLVG - s.ANLV, 0.)
-        NDEMST = max(NMAXST * WST - s.ANST, 0.)
-        NDEMRT = max(NMAXRT * WRT - s.ANRT, 0.)
+        NDEMLV = max(NMAXLV * k.WLVG - s.ANLV, 0.)
+        NDEMST = max(NMAXST * k.WST - s.ANST, 0.)
+        NDEMRT = max(NMAXRT * k.WRT - s.ANRT, 0.)
 
         # Total Nitrogen demand.
         s.NDEMTO = max(0.0, (NDEMLV + NDEMST + NDEMRT))
@@ -573,8 +563,9 @@ class Lintul3(SimulationObject):
      PEVAP       Potential soil evaporation rate                   Y     |mmday-1|
      PTRAN       Potential crop transpiration rate                 Y     |mmday-1|
      TRAN        Actual crop transpiration rate                    N     |mmday-1|
-     TRANRF      Transpiration reduction factor calculated         N     -
+     TRANRF      Transpiration reduction factor calculated         N      -
      RROOTD      Rate of root growth                               Y     |mday-1|
+     NNI         Nitrogen Nutrition Index                          N      -
     =========== ================================================= ==== ===============
     """
 
@@ -652,6 +643,7 @@ class Lintul3(SimulationObject):
         RROOTD = Float()
         DLV = Float()
         DRRT = Float()
+        NNI = Float()
 
     def initialize(self, day, kiosk, parvalues):
         """
@@ -712,11 +704,9 @@ class Lintul3(SimulationObject):
         p = self.params
         s = self.states
         r = self.rates
+        k = self.kiosk
 
         DELT = 1
-
-        DVS = self.pheno.get_variable("DVS")
-        TSUM = self.pheno.get_variable("TSUM")
 
         DTR = joule2megajoule(drv.IRRAD)
         PAR = DTR * 0.50
@@ -726,11 +716,8 @@ class Lintul3(SimulationObject):
         # potential rates of evaporation and transpiration:
         r.PEVAP, r.PTRAN = self._calc_potential_evapotranspiration(drv)
 
-        # Water content in the rootzone
-        WC = self.kiosk["WC"]
-
         # actual rate of transpiration:
-        r.TRAN = self._calc_actual_transpiration(r.PTRAN, WC)
+        r.TRAN = self._calc_actual_transpiration(r.PTRAN, k.WC)
 
         # Crop phenology
         #
@@ -739,27 +726,25 @@ class Lintul3(SimulationObject):
         # (DVS) as a function of heat sum, which is the cumulative daily effective
         # temperature. Daily effective temperature is the average temperature above a
         # crop-specific base temperature (for rice 8C). Some crop or crop varieties are
-        # photoperiodsensitive, i.e. flowering depends on the length of the light period
+        # photoperiod sensitive, i.e. flowering depends on the length of the light period
         # during the day in addition to the temperature during the vegetative stage.
         self.pheno.calc_rates(day, drv)
-        crop_stage = self.pheno.get_variable("STAGE")
 
         # if before emergence there is no need to continue
         # because only the phenology is running.
-        if crop_stage == "emerging":
+        if self.pheno.get_variable("STAGE") == "emerging":
             return  # no above-ground crop to calculate yet
 
         # code below is executed only POST-emergence
 
-        # Relative deathOfLeaves rate of leaves due to senescence/ageing.
-        RDRTMP = p.RDRT(DAVTMP)
-
         # Nitrogen Nutrition Index.
-        NNI = self.nstress(day, drv)
+        r.NNI = self.nstress(day, drv)
 
-        # -------- Growth rates and dry matter production of plant organs-------*
-        #  Biomass partitioning functions under (water and nitrogen)non-stressed
-        #  situations
+        # Growth reduction function for water stress(actual trans/potential)
+        r.TRANRF = r.TRAN / r.PTRAN
+
+        # total totalGrowthRate rate.
+        RGROWTH = self._total_growth_rate(DTR, r.TRANRF, r.NNI)
 
         # Biomass partitioning
         #
@@ -777,10 +762,9 @@ class Lintul3(SimulationObject):
         # time course of weights of these organs follows from integration of their net
         # growth rates, i.e. growth rates minus death rates, the latter being defined as a
         # function of physiological age, shading and stress.
-        FRTWET = p.FRTTB(DVS)
-        FLVT = p.FLVTB(DVS)
-        FSTT = p.FSTTB(DVS)
-        FSOT = p.FSOTB(DVS)
+        #
+        # Modification are applied to root/shoot ratio in case of water/nitrogen stress.
+        FRT, FLV, FST, FSO = self._drymatter_partitioning_fractions(p.NPART, r.TRANRF, r.NNI)
 
         # Leaf area development
         #
@@ -804,26 +788,18 @@ class Lintul3(SimulationObject):
         # where (dGLAI/dt) is the leaf area growth rate and (dDLAI/dt) is the
         # leaf area death rate.
 
-        # Specific Leaf area(m2/g).
-        SLA = p.SLAC * p.SLACF(DVS) * exp(-p.NSLA * (1.-NNI))
-
-        # Growth reduction function for water stress(actual trans/potential)
-        r.TRANRF = r.TRAN / r.PTRAN
-
-        # relative modification for root and shoot allocation.
-        FRT, FLV, FST, FSO = self._drymatter_partitioning_fractions(p.NPART, r.TRANRF, NNI, FRTWET, FLVT, FSTT, FSOT)
-
-        # total totalGrowthRate rate.
-        RGROWTH = self._total_growth_rate(DTR, r.TRANRF, NNI)
-
         # Leaf totalGrowthRate and LAI.
         GLV = FLV * RGROWTH
 
-        # daily increase of leaf area index.
-        GLAI = self._growth_leaf_area(DTEFF, self.LAII, DELT, SLA, GLV, WC, DVS, r.TRANRF, NNI)
+        # Specific Leaf area(m2/g).
+        SLA = p.SLAC * p.SLACF(k.DVS) * exp(-p.NSLA * (1. - r.NNI))
 
-        # relative deathOfLeaves rate of leaves.
-        DLV, DLAI = self._death_rate_of_leaves(TSUM, RDRTMP, NNI, SLA)
+        # daily increase of leaf area index.
+        GLAI = self._growth_leaf_area(DTEFF, self.LAII, DELT, SLA, GLV, k.WC, k.DVS, r.TRANRF, r.NNI)
+
+        # Relative and actual death rate of leaves due to senescence/ageing.
+        RDRTMP = p.RDRT(DAVTMP)
+        DLV, DLAI = self._death_rate_of_leaves(k.TSUM, RDRTMP, r.NNI, SLA)
 
         # Net rate of change of Leaf area.
         RLAI = GLAI - DLAI
@@ -837,18 +813,17 @@ class Lintul3(SimulationObject):
         # content is above permanent wilting point (PWP), whereas growth ceases when soil
         # is drier than PWP or when a certain preset maximum rooting depth is reached
         # (Spitters and Schapendonk, 1990; Farr� et al., 2000).
-        r.RROOTD = min(p.RRDMAX,  p.ROOTDM - s.ROOTD) if (WC > p.WCWP) else 0.0
+        r.RROOTD = min(p.RRDMAX,  p.ROOTDM - s.ROOTD) if (k.WC > p.WCWP) else 0.0
 
         # Death of roots.
-        DRRT = 0. if (DVS < p.DVSDR) else s.WRT * p.RDRRT
+        DRRT = 0. if (k.DVS < p.DVSDR) else s.WRT * p.RDRRT
 
-        # relative totalGrowthRate rate of roots, leaves, stem
+        # Actual growth rate of roots, leaves, stem
         # and storage organs.
-        RWLVG = RGROWTH * FLV - DLV
+        RWLVG = GLV - DLV
         RWRT = RGROWTH * FRT - DRRT
         RWST = RGROWTH * FST
         RWSO = RGROWTH * FSO
-
 
         # ****************SOIL NITROGEN SUPPLY***********************************
         # Soil–crop nitrogen balance
@@ -866,21 +841,20 @@ class Lintul3(SimulationObject):
         # and the N demand from the crop.
 
         #  Soil N supply (g N m-2 d-1) through mineralization.
-        NLIMIT = 1.0 if (DVS < p.DVSNLT) and (WC >= p.WCWP) else 0.0
+        NLIMIT = 1.0 if (k.DVS < p.DVSNLT) and (k.WC >= p.WCWP) else 0.0
         RTMIN = 0.10 * NLIMIT
 
         #  Change in inorganic N in soil as function of fertilizer
         #  input, soil N mineralization and crop uptake.
-        NDEMTO = self.kiosk["NDEMTO"]
-        NUPTR = (max(0., min(NDEMTO, s.TNSOIL)) * NLIMIT) / DELT
+        NUPTR = (max(0., min(k.NDEMTO, s.TNSOIL)) * NLIMIT) / DELT
         RNSOIL = self.FERTNS/DELT - NUPTR + RTMIN
         self.FERTNS = 0.0
 
         # Carbon balance
         WLV = s.WLVG + s.WLVD  # Total leaf weight
-        CBALAN = (s.TGROWTH + (p.WRTLI + p.WLVGI + p.WSTI + p.WSOI)
-                  - (WLV + s.WST + s.WSO + s.WRT + s.WDRT))
-        if abs(CBALAN) > 0.0001:
+        CBALANCE = (s.TGROWTH + (p.WRTLI + p.WLVGI + p.WSTI + p.WSOI)
+                    - (WLV + s.WST + s.WSO + s.WRT + s.WDRT))
+        if abs(CBALANCE) > 0.0001:
             raise CarbonBalanceError("Carbon un-balance in crop model at day %s" % day)
 
         # Assign associated rates
@@ -921,6 +895,7 @@ class Lintul3(SimulationObject):
         s.integrate(delta=delt)
 
         # Compute some derived states
+        # Total above-ground biomass
         s.TAGBM = s.WLVG + s.WLVD + s.WST + s.WSO
         # Total living vegetative biomass.
         s.TBGMR = s.WLVG + s.WST
@@ -991,12 +966,18 @@ class Lintul3(SimulationObject):
         
         return GLAI
 
-    def _drymatter_partitioning_fractions(self, NPART, TRANRF, NNI, FRTWET, FLVT, FSTT, FSOT):
+    def _drymatter_partitioning_fractions(self, NPART, TRANRF, NNI):
         """Dry matter partitioning fractions to leaves, stem and storage organs.
 
         Obsolete subroutine name: SUBPAR
         """
-      
+        k = self.kiosk
+        p = self.params
+        FRTWET = p.FRTTB(k.DVS)
+        FLVT = p.FLVTB(k.DVS)
+        FSTT = p.FSTTB(k.DVS)
+        FSOT = p.FSOTB(k.DVS)
+
         if TRANRF < NNI:
             #  Water stress is more severe as compared to nitrogen stress and
             #  partitioning will follow the original assumptions of LINTUL2*
@@ -1016,7 +997,7 @@ class Lintul3(SimulationObject):
             FRT = FRTWET * MODIF
             FSO = FSOT * MODIF
     
-        return FRT, FLV, FST, FSO  # FLVMOD removed from signature - WdW
+        return FRT, FLV, FST, FSO
     
     def _total_growth_rate(self, DTR, TRANRF, NNI):
         """Compute the total totalGrowthRate rate.

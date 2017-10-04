@@ -115,6 +115,9 @@ class VariableKiosk(dict):
         """
         return dict.__contains__(self, item)
 
+    def __getattr__(self, item):
+        return self[item]
+
     def __str__(self):
         msg = "Contents of VariableKiosk:\n"
         msg += " * Registered state variables: %i\n" % len(self.registered_states)

@@ -322,7 +322,7 @@ class DVS_Phenology(SimulationObject):
         # Define initial states
         DVS = self.params.DVSI
         DOS, DOE, STAGE = self._get_initial_stage(day)
-        self.states = self.StateVariables(kiosk, publish="DVS",
+        self.states = self.StateVariables(kiosk, publish=["DVS", "TSUM"],
                                           TSUM=0., TSUME=0., DVS=DVS,
                                           DOS=DOS, DOE=DOE, DOA=None, DOM=None,
                                           DOH=None, STAGE=STAGE)
