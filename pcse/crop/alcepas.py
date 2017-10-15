@@ -23,7 +23,6 @@ class ALCEPAS_phenology(SimulationObject):
         DVS = Float()
         BULBSUM = Float()
         BULB = Float()
-        LAI = Float()
 
     class RateVariables(RatesTemplate):
         TEFF = Float()
@@ -35,8 +34,8 @@ class ALCEPAS_phenology(SimulationObject):
 
     def initialize(self, day, kiosk, parvalues):
         self.params = self.Parameters(parvalues)
-        self.rates = self.RateVariables(day, kiosk)
-        self.states = self.StateVariables(day, kiosk, DVS=0., BULBSUM=0.,
+        self.rates = self.RateVariables(kiosk)
+        self.states = self.StateVariables(kiosk, DVS=0., BULBSUM=0.,
                                           BULB=0., LAI=5.)
         pass
 
@@ -44,16 +43,16 @@ class ALCEPAS_phenology(SimulationObject):
     def calc_rates(self, day, drv):
         r = self.rates
         s = self.states
+        k = self.kiosk
 
         r.TEFF = max(0., drv.TEMP - 6.)
         DL = daylength(day, drv.LAT)
         r.DAYFAC = 0 if DL < 12 else (DL - 12.)/12
         # Change v into the right equation
-        v = 0.9
-        r.RFR = limit(0., 1., v)
-        r.RFRFAC = 1 if r.RFR < 0.8 else 5*(1.0 - r.FRF)
+        r.RFR = exp(-0.222 * k.LAI)
+        r.RFRFAC = 1 if r.RFR < 0.8 else 5*(1.0 - r.RFR)
         r.DTSUM = r.TEFF * r.DAYFAC * r.RFRFAC
-        if s.states.DVS < 1.0:
+        if s.DVS < 1.0:
             r.DVR = r.DTSUM/104.
         else:
             r.DVR = r.DTSUM/303.
@@ -68,5 +67,37 @@ class ALCEPAS_phenology(SimulationObject):
         s.BULB = limit(0., 100., BULB)
 
         if s.DVS > 2:
-            self._send_signal(signals.crop_finish)
+            self._send_signal(signal=signals.crop_finish, day=day,
+                   finish_type="MATURITY", crop_delete=True)
 
+
+class ALCEPAS_leaf_dynamics(SimulationObject):
+
+    class StateVariables(StatesTemplate):
+        LAI = Float
+
+    def initialize(self, day, kiosk, parvalues):
+        self.states = self.StateVariables(kiosk, LAI=1.0, publish="LAI")
+
+    def calc_rates(self, day, drv):
+        pass
+
+    def integrate(self, day, delt=1.0):
+        self.touch()
+
+
+class ALCEPAS(SimulationObject):
+    LAI_dynamics = Instance(SimulationObject)
+    phenology = Instance(SimulationObject)
+
+    def initialize(self, day, kiosk, parvalues):
+        self.LAI_dynamics = ALCEPAS_leaf_dynamics(day, kiosk, parvalues)
+        self.phenology = ALCEPAS_phenology(day, kiosk, parvalues)
+
+    def calc_rates(self, day, drv):
+        self.LAI_dynamics.calc_rates(day, drv)
+        self.phenology.calc_rates(day, drv)
+
+    def integrate(self, day, delt=1.0):
+        self.LAI_dynamics.integrate(day, delt)
+        self.phenology.integrate(day, delt)
