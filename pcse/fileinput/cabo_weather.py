@@ -21,6 +21,8 @@ class CABOWeatherDataProvider(WeatherDataProvider):
         method for reference evapotranspiration. Defaults to "PM".
     :keyword distance: maximum interpolation distance for meteorological
         variables, defaults to 1 day.
+    :keyword allow_missing_rainfall: Allow rainfall to be missing and
+        set the missing values to zero.
     :returns: callable like object with meteo records keyed on date.
     
     The Wageningen crop models that are written in FORTRAN or FST often use
@@ -88,10 +90,11 @@ class CABOWeatherDataProvider(WeatherDataProvider):
     potential_records = None
     tmp_data = None
     
-    def __init__(self, fname, fpath=None, ETmodel="PM", distance=1):
+    def __init__(self, fname, fpath=None, ETmodel="PM", distance=1, allow_missing_rainfall=False):
         WeatherDataProvider.__init__(self)
 
         self.ETmodel = ETmodel
+        self.allow_missing_rainfall = allow_missing_rainfall
 
         # Construct search path
         search_path = self._construct_search_path(fname, fpath)
@@ -164,6 +167,7 @@ class CABOWeatherDataProvider(WeatherDataProvider):
             # Else load data from cache file and store internally
             try:
                 self._load(cache_file)
+                print("Loading weather from cache file: %s" % cache_file)
                 return True
             except Exception as e:
                 msg = "Cache file failed loading! Try to delete cache file: %s"
@@ -228,43 +232,51 @@ class CABOWeatherDataProvider(WeatherDataProvider):
         has_data = np.ones_like(self.tmp_data)
         # find indivual missing observations which are equal to self.weather_no_data (e..g -99.),
         # set them to np.NaN
-        index = np.where(self.tmp_data == self.weather_no_data)
+        index = self.tmp_data == self.weather_no_data
         has_data[index] = 0
         self.tmp_data[index] = np.NaN
         # Find missing lines in the CABOWE files, these have not been inserted in tmp_data and
         # are therefore np.NaN (tmp_data was initialized with np.NaN)
-        index = np.where(np.isnan(self.tmp_data) == True )
+        index = np.isnan(self.tmp_data)
         has_data[index] = 0
 
         for i, (var, cf, unit) in enumerate(self.variables):
             if var == "RAIN":
-                # No interpolation on rainfall data
-                continue
+                # No interpolation on rainfall data if not allowed to be missing
+                if not self.allow_missing_rainfall:
+                    continue
+
             timeseries_hasdata = has_data[i,:].flatten()
             if timeseries_hasdata.sum() == timeseries_hasdata.size:
                 # No missing values
                 continue
+
             timeseries = self.tmp_data[i,:].flatten()
-            r = np.convolve(timeseries_hasdata, kernel, mode='same')
-            
-            # Find positions for interpolation: hasdata==0 and >=2 neighbours
-            # except the first and last record
-            index = (timeseries_hasdata==0)*(r>=2)
-            index[0]  = False
-            index[-1] = False
-            if True not in index:
-                # No positions that can be interpolated
-                continue
-                
-            # Determine positions and y values for interpolation (x, xp, yp)
-            xrange = np.arange(self.potential_records, dtype=np.float)
-            x  = xrange[index]
-            xp = xrange[(timeseries_hasdata == 1)]
-            yp = timeseries[(timeseries_hasdata == 1)]
-            y_int = np.interp(x,xp,yp)
+            if var == "RAIN":  # Rainfall, just set missing values to zero
+                index = timeseries_hasdata == 0
+                timeseries[index] = 0.
+            else:  # Other variable, start linear interpolation of missing values
+                r = np.convolve(timeseries_hasdata, kernel, mode='same')
+
+                # Find positions for interpolation: hasdata==0 and >=2 neighbours
+                # except the first and last record
+                index = (timeseries_hasdata==0)*(r>=2)
+                index[0]  = False
+                index[-1] = False
+                if True not in index:
+                    # No positions that can be interpolated
+                    continue
+
+                # Determine positions and y values for interpolation (x, xp, yp)
+                xrange = np.arange(self.potential_records, dtype=np.float)
+                x  = xrange[index]
+                xp = xrange[(timeseries_hasdata == 1)]
+                yp = timeseries[(timeseries_hasdata == 1)]
+                y_int = np.interp(x,xp,yp)
+                timeseries[x.astype(np.int)] = y_int
 
             # put interpolated values back into tmp_data
-            self.tmp_data[i, x.astype(np.int)] = y_int
+            self.tmp_data[i,:] = timeseries
     
 
     def _make_WeatherDataContainers(self):
