@@ -1,23 +1,24 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2004-2014 Alterra, Wageningen-UR
+# Copyright (c) 2004-2017 Alterra, Wageningen-UR
 # Allard de Wit (allard.dewit@wur.nl), October 2017
 """Basic routines for ALCEPAS onion model
 """
 from __future__ import print_function
-from math import sqrt, exp, cos, pi
+from math import exp
 from collections import deque
 from array import array
+import datetime as dt
 
-from ..traitlets import Instance, Float, AfgenTrait
-
+from ..traitlets import Instance, Float, AfgenTrait, Enum, Unicode
 from .assimilation import totass
 from ..util import limit, astro, doy, daylength
 from ..base_classes import ParamTemplate, StatesTemplate, RatesTemplate, SimulationObject
 from ..decorators import prepare_rates, prepare_states
 from .. import signals
+from .. import exceptions as exc
 
 
-class ALCEPAS_Respiration(SimulationObject):
+class Respiration(SimulationObject):
 
     class Parameters(ParamTemplate):
         Q10 = Float()
@@ -35,9 +36,9 @@ class ALCEPAS_Respiration(SimulationObject):
     @prepare_rates
     def __call__(self, day, drv):
         r = self.rates
-        s = self.states
         k = self.kiosk
         p = self.params
+
         MAINSO = p.MSOTB(k.DVS)
         MAINLV = p.MLVTB(k.DVS)
         MAINRT = p.MRTTB(k.DVS)
@@ -49,7 +50,7 @@ class ALCEPAS_Respiration(SimulationObject):
         return r.MAINT
 
 
-class ALCEPAS_Assimilation(SimulationObject):
+class Assimilation(SimulationObject):
 
     class Parameters(ParamTemplate):
         AMX = Float()
@@ -68,11 +69,10 @@ class ALCEPAS_Assimilation(SimulationObject):
     @prepare_rates
     def __call__(self, day, drv):
         r = self.rates
-        s = self.states
         k = self.kiosk
         p = self.params
 
-        a  = astro(day, drv.LAT, drv.IRRAD)
+        a = astro(day, drv.LAT, drv.IRRAD)
         AMDVS = p.AMDVST(k.DVS)
         AMTMP = p.AMTMPT(drv.DTEMP)
         AMAX = p.AMX * AMDVS * AMTMP
@@ -81,7 +81,8 @@ class ALCEPAS_Assimilation(SimulationObject):
         return r.GPHOT
 
 
-class ALCEPAS_partitioning(SimulationObject):
+class Partitioning(SimulationObject):
+
     class Parameters(ParamTemplate):
         FLVTB = AfgenTrait()
         FSHTB = AfgenTrait()
@@ -107,19 +108,29 @@ class ALCEPAS_partitioning(SimulationObject):
         r.FSO = 1. - r.FLV
 
 
-class ALCEPAS_phenology(SimulationObject):
+class Phenology(SimulationObject):
 
     class Parameters(ParamTemplate):
         TBAS = Float()
         DAGTB = AfgenTrait()
         RVRTB = AfgenTrait()
         BOL50 = Float()
-        FALL50= Float()
+        FALL50 = Float()
+        TSOPK = Float() # TSUM until emergence (tsum opkomst)
+        TBASE = Float()
+        CROP_START_TYPE = Unicode()
+        CROP_END_TYPE = Unicode()
 
     class StateVariables(StatesTemplate):
         DVS = Float()
         BULBSUM = Float()
         BULB = Float()
+        EMERGE = Float()
+        DOS = Instance(dt.date)
+        DOE = Instance(dt.date)
+        DOB50 = Instance(dt.date)
+        DOF50 = Instance(dt.date)
+        STAGE = Enum(["emerging", "vegetative", "reproductive", "mature"])
 
     class RateVariables(RatesTemplate):
         DTDEV = Float()
@@ -128,13 +139,22 @@ class ALCEPAS_phenology(SimulationObject):
         RFRFAC = Float()
         DVR = Float()
         DTSUM = Float()
+        DEMERGE = Float()
 
     def initialize(self, day, kiosk, parvalues):
         self.params = self.Parameters(parvalues)
         self.rates = self.RateVariables(kiosk)
-        self.states = self.StateVariables(kiosk, DVS=0., BULBSUM=0.,
-                                          BULB=0., LAI=5., publish="DVS")
-        pass
+        if parvalues["CROP_START_TYPE"] == "sowing":
+            stage = "emerging"
+            dos = day
+            doe = None
+        else:
+            stage = "vegetative"
+            dos = None
+            doe = day
+        self.states = self.StateVariables(kiosk, DVS=0., BULBSUM=0., STAGE=stage,
+                                          BULB=0., EMERGE=0., DOS=dos, DOE=doe,
+                                          DOB50=None, DOF50=None, publish="DVS", )
 
     @prepare_rates
     def calc_rates(self, day, drv):
@@ -143,15 +163,22 @@ class ALCEPAS_phenology(SimulationObject):
         k = self.kiosk
         p = self.params
 
-        r.DTDEV = max(0., drv.TEMP - p.TBAS)
-        if s.DVS < 1.0:
+        if s.STAGE == "emerging":
+            r.DEMERGE = max(0, drv.TEMP - p.TBASE)
+            r.DTSUM = 0.
+            r.DVR = 0.
+        elif s.STAGE == "vegetative":
+            r.DTDEV = max(0., drv.TEMP - p.TBAS)
             DL = daylength(day, drv.LAT)
             r.DAYFAC = p.DAGTB(DL)
             r.RFR = exp(-0.222 * k.LAI)
             r.RFRFAC = p.RVRTB(r.RFR)
+            r.DEMERGE = 0.
             r.DTSUM = r.DTDEV * r.DAYFAC * r.RFRFAC
             r.DVR = r.DTSUM/p.BOL50
         else:
+            r.DEMERGE = 0.
+            r.DTDEV = max(0., drv.TEMP - p.TBAS)
             r.DTSUM = r.DTDEV
             r.DVR = r.DTSUM/p.FALL50
 
@@ -159,33 +186,38 @@ class ALCEPAS_phenology(SimulationObject):
     def integrate(self, day, delt=1.0):
         s = self.states
         r = self.rates
+        p = self.params
+
+        BULB = 0.
+        s.EMERGE += r.DEMERGE * delt
         s.BULBSUM += r.DTSUM * delt
         s.DVS += r.DVR * delt
-        BULB = 0.3 + 100.45 * (exp(-exp(-0.0293*(s.BULBSUM - 91.9))))
+        if s.STAGE == "emerging":
+            if s.EMERGE >= p.TSOPK:
+                s.STAGE = "vegetative"
+                s.DOE = day
+        elif s.STAGE == "vegetative":
+            BULB = 0.3 + 100.45 * (exp(-exp(-0.0293*(s.BULBSUM - 91.9))))
+            if s.DVS >= 1.0:
+                s.STAGE = "reproductive"
+                s.DOB50 = day
+        elif s.STAGE == "reproductive":
+            BULB = 0.3 + 100.45 * (exp(-exp(-0.0293*(s.BULBSUM - 91.9))))
+            if s.DVS >= 2.0:
+                print("Reached maturity at day %s" % day)
+                s.STAGE = "mature"
+                s.DOF50 = day
+                if p.CROP_END_TYPE == "maturity":
+                    self._send_signal(signal=signals.crop_finish, day=day,
+                                      finish_type="MATURITY", crop_delete=True)
+        else:  # Maturity not more changes in phenological stage
+            BULB = 0.3 + 100.45 * (exp(-exp(-0.0293*(s.BULBSUM - 91.9))))
+
         s.BULB = limit(0., 100., BULB)
 
-        if s.DVS > 2:
-            self._send_signal(signal=signals.crop_finish, day=day,
-                   finish_type="MATURITY", crop_delete=True)
 
-#
-# class ALCEPAS_leaf_dynamics(SimulationObject):
-#
-#     class StateVariables(StatesTemplate):
-#         LAI = Float
-#
-#     def initialize(self, day, kiosk, parvalues):
-#         self.states = self.StateVariables(kiosk, LAI=1.0, publish="LAI")
-#
-#     def calc_rates(self, day, drv):
-#         pass
-#
-#     def integrate(self, day, delt=1.0):
-#         self.touch()
-
-
-class ALCEPAS_Leaf_Dynamics(SimulationObject):
-    """Leaf dynamics for the WOFOST crop model.
+class LeafDynamics(SimulationObject):
+    """Leaf dynamics for the ALCEPAS crop model.
 
     Implementation of biomass partitioning to leaves, growth and senenscence
     of leaves. WOFOST keeps track of the biomass that has been partitioned to
@@ -294,8 +326,8 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         AGED = Float(-99)
         LAGR = Float(-99.)  # Grens tot waar LAI berekend wordt met exp. functie
         GEGR = Float(-99.)  # Totaal droge stof bij LAGR
-        LA0 = Float(-99)  # LAI bij opkomst afhankelijk van plantdichtheid (NPL)
-        NPL = Float(-99)  # Plant dichtheid
+        LA0 = Float(-99)    # LAI bij opkomst afhankelijk van plantdichtheid (NPL)
+        NPL = Float(-99)    # Plant dichtheid
         RGRL = Float(-99)
         GTSLA = Float(-99)
         TTOP = Float(-99)
@@ -316,7 +348,7 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         TSUMEM = Float(-99)
 
     class RateVariables(RatesTemplate):
-        GRLV = Float(-99.)
+        GLV = Float(-99.)
         GLAD = Float(-99.)
         GLA = Float(-99.)
         DLV = Float(-99.)
@@ -335,16 +367,13 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
 
         self.kiosk = kiosk
         self.params = self.Parameters(parvalues)
-        self.rates = self.RateVariables(kiosk)
+        self.rates = self.RateVariables(kiosk, publish=["GLV"])
 
         # CALCULATE INITIAL STATE VARIABLES
         p = self.params
         self.LAII = p.NPL * p.LA0 * 1.E-4
         self.SLAN = p.SLANTB(p.NPL)
         self.SLAR = p.SLARTB(p.NPL)
-
-        LAI = 0.
-        LAIMAX = 0.
 
         # Initial leaf biomass
         WLVG = 0.
@@ -360,14 +389,8 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         # Initialize StateVariables object
         self.states = self.StateVariables(kiosk, publish=["LAI", "WLV", "WLVG", "WLVD"],
                                           LV=LV, LVAGE=LVAGE, SPAN=SPAN, SLABC=SLABC,
-                                          LAIMAX=LAIMAX, TSUMEM=0.,
-                                          LAI=LAI, WLV=WLV, WLVD=WLVD, WLVG=WLVG)
-
-    def _calc_LAI(self):
-        # Total leaf area Index as sum of leaf, pod and stem area
-        SAI = self.kiosk["SAI"]
-        PAI = self.kiosk["PAI"]
-        return self.states.LASUM + SAI + PAI
+                                          LAIMAX=0., TSUMEM=0., LAI=self.LAII, WLV=WLV,
+                                          WLVD=WLVD, WLVG=WLVG)
 
     def calc_SPAN(self):
         p = self.params
@@ -383,8 +406,10 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         k = self.kiosk
 
         # Growth rate leaves
-        # weight of new leaves
-        r.GRLV = k.GLV
+        # weight of of shoots
+        GSH = k.FSH * k.GTW
+        # weight of new leaves as fraction of shoots
+        r.GLV = k.FLV * GSH
 
         # Determine how much leaf biomass classes have to die in states.LV,
         # given the a life span > SPAN, these classes will be accumulated
@@ -406,7 +431,7 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         r.SPANT = self.calc_SPAN()
 
         # Increase and leaf area and SLA
-        r.GLA, r.SLAT = self.GLA(drv)
+        r.GLA, r.SLAT = self.leaf_area_growth(drv)
 
     @prepare_states
     def integrate(self, day, delt=1.0):
@@ -445,7 +470,7 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
 
         # --------- leave growth ---------
         # new leaves in class 1
-        tLV.appendleft(rates.GRLV)
+        tLV.appendleft(rates.GLV)
         tSLABC.appendleft(rates.SLAT)
         tLVAGE.appendleft(0.)
         tSPAN.appendleft(rates.SPANT)
@@ -468,8 +493,7 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
 
         self.states.TSUMEM += self.rates.DTSUMM
 
-    def GLA(self, drv):
-        # Function GLA:
+    def leaf_area_growth(self, drv):
         # Computes daily increase of leaf area index (ha leaf/ ha ground/ d)
         p = self.params
         k = self.kiosk
@@ -488,12 +512,12 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
             SLA = (self.SLAN + self.SLAR * p.GTSLA ** k.DVS) * 1/100000.
             GLA = self.LAII * p.RGRL * r.DTSUMM * exp(p.RGRL * s.TSUMEM)
             # Adjust SLA for youngest leaves under exponential growth conditions
-            if r.GRLV > 0.:
-                SLA = GLA/r.GRLV
+            if r.GLV > 0.:
+                SLA = GLA/r.GLV
         else:
             # leaf growth during mature plant growth:
             SLA = (self.SLAN + self.SLAR * p.GTSLA ** k.DVS) * 1/100000.
-            GLA = (SLA * r.GRLV)
+            GLA = (SLA * r.GLV)
 
         # correct for leaf death
         GLA = GLA - r.GLAD
@@ -501,12 +525,67 @@ class ALCEPAS_Leaf_Dynamics(SimulationObject):
         return GLA, SLA
 
 
+class RootDynamics(SimulationObject):
+
+    class RateVariables(RatesTemplate):
+        GRT = Float()
+
+    class StateVariables(StatesTemplate):
+        WRT = Float()
+
+    def initialize(self, day, kiosk, parvalues):
+        self.rates = self.RateVariables(kiosk, publish=["GRT"])
+        self.states = self.StateVariables(kiosk, WRT=0., publish=["WRT"])
+
+    @prepare_rates
+    def calc_rates(self, day, drv):
+        k = self.kiosk
+        r = self.rates
+        r.GRT = k.FRT * k.GTW
+
+    @prepare_states
+    def integrate(self, day, delt=1.0):
+        r = self.rates
+        s = self.states
+        s.WRT += r.GRT * delt
+
+
+class BulbDynamics(SimulationObject):
+
+    class RateVariables(RatesTemplate):
+        GSO = Float()
+
+    class StateVariables(StatesTemplate):
+        WSO = Float()
+
+    def initialize(self, day, kiosk, parvalues):
+        self.rates = self.RateVariables(kiosk, publish=["GSO"])
+        self.states = self.StateVariables(kiosk, WSO=0., publish=["WSO"])
+
+    @prepare_rates
+    def calc_rates(self, day, drv):
+        k = self.kiosk
+        r = self.rates
+        # increase in weight of shoots
+        GSH = k.FSH * k.GTW
+        # Increase in weight of bulb
+        r.GSO = k.FSO * GSH
+
+    @prepare_states
+    def integrate(self, day, delt=1.0):
+        r = self.rates
+        s = self.states
+        s.WSO += r.GSO * delt
+
+
 class ALCEPAS(SimulationObject):
-    LAI_dynamics = Instance(SimulationObject)
+    leafdynamics = Instance(SimulationObject)
     phenology = Instance(SimulationObject)
     partitioning = Instance(SimulationObject)
     assimilation = Instance(SimulationObject)
     respiration = Instance(SimulationObject)
+    rootdynamics = Instance(SimulationObject)
+    bulbdynamics = Instance(SimulationObject)
 
     class Parameters(ParamTemplate):
         ASRQSO = Float()
@@ -515,66 +594,66 @@ class ALCEPAS(SimulationObject):
 
     class RateVariables(RatesTemplate):
         GTW = Float()
-        GSH = Float()
-        GSO = Float()
-        GRT = Float()
-        GLV = Float()
 
     class StateVariables(StatesTemplate):
-        # WLVG = Float()
-        # WLVD = Float()
-        WSO = Float()
-        WRT = Float()
-        # WLV = Float()
         TADRW = Float()
 
     def initialize(self, day, kiosk, parvalues):
-        self.LAI_dynamics = ALCEPAS_Leaf_Dynamics(day, kiosk, parvalues)
-        self.phenology = ALCEPAS_phenology(day, kiosk, parvalues)
-        self.partitioning = ALCEPAS_partitioning(day, kiosk, parvalues)
-        self.assimilation = ALCEPAS_Assimilation(day, kiosk, parvalues)
-        self.respiration = ALCEPAS_Respiration(day, kiosk, parvalues)
+        self.leafdynamics = LeafDynamics(day, kiosk, parvalues)
+        self.phenology = Phenology(day, kiosk, parvalues)
+        self.partitioning = Partitioning(day, kiosk, parvalues)
+        self.assimilation = Assimilation(day, kiosk, parvalues)
+        self.respiration = Respiration(day, kiosk, parvalues)
+        self.rootdynamics = RootDynamics(day, kiosk, parvalues)
+        self.bulbdynamics = BulbDynamics(day, kiosk, parvalues)
 
         self.params = self.Parameters(parvalues)
-        self.rates = self.RateVariables(kiosk, publish="GLV")
-        self.states = self.StateVariables(kiosk, WSO=0., WRT=0., TADRW=0.,
-                                          publish=["WSO","WRT","TADRW",])
+        self.rates = self.RateVariables(kiosk, publish=["GTW"])
+        self.states = self.StateVariables(kiosk, TADRW=0., publish=["TADRW"])
 
     @prepare_rates
     def calc_rates(self, day, drv):
         p = self.params
         k = self.kiosk
         r = self.rates
-        s = self.states
 
+        # phenological development
         self.phenology.calc_rates(day, drv)
-        self.partitioning(day, drv)
+        if self.get_variable("STAGE") == "emerging":
+            self.touch()  # No need to continue before emergence
+            return
+
+        # Assimilation and respiration
         GPHOT = self.assimilation(day, drv)
         MAINT = self.respiration(day, drv)
 
-        # assimilate requirements for dry matter conversion (kgCH20 / kgDM)
+        # Partitioning and assimilate requirements for dry matter conversion (kgCH20 / kgDM)
+        self.partitioning(day, drv)
         ASRQ = k.FSH * (p.ASRQLV * k.FLV + p.ASRQSO * k.FSO) + p.ASRQRT * k.FRT
+        # Total dry matter growth
         r.GTW = (GPHOT - MAINT) / ASRQ
-        r.GSH = k.FSH * r.GTW
-        r.GLV = k.FLV * r.GSH
-        r.GSO = k.FSO * r.GSH
-        r.GRT = k.FRT * r.GTW
 
-        self.LAI_dynamics.calc_rates(day, drv)
+        # Partitioning and dynamics of different plant organs
+        self.leafdynamics.calc_rates(day, drv)
+        self.rootdynamics.calc_rates(day, drv)
+        self.bulbdynamics.calc_rates(day, drv)
+
+        self.check_carbon_balance(day)
+
+    def check_carbon_balance(self, day):
+        r = self.rates
+        k = self.kiosk
+        if r.GTW - (k.GSO + k.GLV + k.GRT) > 0.0001:
+            raise exc.CarbonBalanceError("Carbon balance not closing on day %s" % day)
 
     @prepare_states
     def integrate(self, day, delt=1.0):
-        p = self.params
         k = self.kiosk
-        r = self.rates
         s = self.states
 
-        self.LAI_dynamics.integrate(day, delt)
+        self.leafdynamics.integrate(day, delt)
         self.phenology.integrate(day, delt)
+        self.rootdynamics.integrate(day, delt)
+        self.bulbdynamics.integrate(day, delt)
 
-        # s.WLVG += (r.GLV - r.DLV) * delt
-        # s.WLVD += r.DLV * delt
-        # s.WLV = s.WLVG + s.WLVD
-        s.WSO += r.GSO * delt
-        s.WRT += r.GRT * delt
-        s.TADRW = k.WLV + s.WSO + s.WRT
+        s.TADRW = k.WLV + k.WSO + k.WRT
